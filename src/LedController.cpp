@@ -1,148 +1,373 @@
-// LedController.cpp
+/**
+ * @file LedController.cpp
+ * @brief Implementation of the LED Controller for dual addressable LED strips
+ * 
+ * Uses Adafruit NeoPixel library for better Arduino UNO R4 WiFi compatibility.
+ */
+
 #include "LedController.h"
 
-#include <algorithm>
+// ============================================================================
+// LED Position Mappings
+// ============================================================================
+// 
+// Define the mapping from logical positions (A-Y) to physical LEDs.
+// Each entry specifies: { strip (STRIP1 or STRIP2), led_index }
+//
+// Modify these values to match your actual LED layout!
+// ============================================================================
 
-// Single-strip constructor: map positions sequentially starting at basePixel
-LedController::LedController(Adafruit_NeoPixel& strip, uint16_t basePixel) {
-    strips_.push_back(&strip);
-    for (size_t i = 0; i < POS_COUNT; ++i) {
-        mapping_[i].strip = 0;
-        mapping_[i].pixelIdx = basePixel + static_cast<uint16_t>(i);
-    }
-}
+static const LedMapping LED_MAPPINGS[NUM_POSITIONS] = {
+    // Position A (index 0)
+    { StripId::STRIP1, 0 },
+    // Position B (index 1)
+    { StripId::STRIP1, 5 },
+    // Position C (index 2)
+    { StripId::STRIP1, 10 },
+    // Position D (index 3)
+    { StripId::STRIP1, 15 },
+    // Position E (index 4)
+    { StripId::STRIP1, 20 },
+    // Position F (index 5)
+    { StripId::STRIP1, 25 },
+    // Position G (index 6)
+    { StripId::STRIP1, 30 },
+    // Position H (index 7)
+    { StripId::STRIP1, 35 },
+    // Position I (index 8)
+    { StripId::STRIP1, 40 },
+    // Position J (index 9)
+    { StripId::STRIP1, 45 },
+    // Position K (index 10)
+    { StripId::STRIP1, 50 },
+    // Position L (index 11)
+    { StripId::STRIP1, 55 },
+    // Position M (index 12)
+    { StripId::STRIP2, 0 },
+    // Position N (index 13)
+    { StripId::STRIP2, 5 },
+    // Position O (index 14)
+    { StripId::STRIP2, 10 },
+    // Position P (index 15)
+    { StripId::STRIP2, 15 },
+    // Position Q (index 16)
+    { StripId::STRIP2, 20 },
+    // Position R (index 17)
+    { StripId::STRIP2, 25 },
+    // Position S (index 18)
+    { StripId::STRIP2, 30 },
+    // Position T (index 19)
+    { StripId::STRIP2, 35 },
+    // Position U (index 20)
+    { StripId::STRIP2, 40 },
+    // Position V (index 21)
+    { StripId::STRIP2, 45 },
+    // Position W (index 22)
+    { StripId::STRIP2, 50 },
+    // Position X (index 23)
+    { StripId::STRIP2, 55 },
+    // Position Y (index 24)
+    { StripId::STRIP2, 58 }
+};
 
-// Explicit mapping constructor
-LedController::LedController(const std::vector<Adafruit_NeoPixel*>& strips,
-                             const std::array<Location, POS_COUNT>& mapping)
-    : strips_(strips), mapping_(mapping) {}
+// ============================================================================
+// Constructor
+// ============================================================================
 
-// Hardcoded mapping constructor
-LedController::LedController(const std::vector<Adafruit_NeoPixel*>& strips, bool useHardcodedMapping)
-    : strips_(strips)
+LedController::LedController()
+    : m_strip1(NUM_LEDS_STRIP1, STRIP1_PIN, NEO_GRB + NEO_KHZ800)
+    , m_strip2(NUM_LEDS_STRIP2, STRIP2_PIN, NEO_GRB + NEO_KHZ800)
+    , m_needsUpdate(false)
 {
-    // Default to safe values
-    for (size_t i = 0; i < POS_COUNT; ++i) {
-        mapping_[i].strip = 0;
-        mapping_[i].pixelIdx = 0;
+}
+
+// ============================================================================
+// Public Methods
+// ============================================================================
+
+void LedController::begin() {
+    // Initialize NeoPixel strips
+    m_strip1.begin();
+    m_strip2.begin();
+    
+    // Set global brightness
+    m_strip1.setBrightness(LED_BRIGHTNESS);
+    m_strip2.setBrightness(LED_BRIGHTNESS);
+    
+    // Clear all LEDs
+    m_strip1.clear();
+    m_strip2.clear();
+    m_strip1.show();
+    m_strip2.show();
+    
+    // Initialize position states
+    for (uint8_t i = 0; i < NUM_POSITIONS; i++) {
+        m_positions[i].state = PositionState::OFF;
+        m_positions[i].animationStep = 0;
+        m_positions[i].lastAnimationTime = 0;
     }
+    
+    m_needsUpdate = false;
+}
 
-    if (!useHardcodedMapping) return;
-
-    if (strips_.size() >= 2) {
-        // Map A..O (0..14) -> strip 0, pixels 0..14
-        for (size_t i = 0; i < 15 && i < POS_COUNT; ++i) {
-            mapping_[i].strip = 0;
-            mapping_[i].pixelIdx = static_cast<uint16_t>(i);
+void LedController::update(uint32_t nowMillis) {
+    // Update all animating positions
+    for (uint8_t i = 0; i < NUM_POSITIONS; i++) {
+        if (m_positions[i].state == PositionState::ANIMATING) {
+            updateAnimation(i, nowMillis);
         }
-        // Map P..Y (15..24) -> strip 1, pixels 0..9
-        for (size_t i = 15; i < POS_COUNT; ++i) {
-            mapping_[i].strip = 1;
-            mapping_[i].pixelIdx = static_cast<uint16_t>(i - 15);
+    }
+    
+    // Push updates to LEDs if needed
+    if (m_needsUpdate) {
+        m_strip1.show();
+        m_strip2.show();
+        m_needsUpdate = false;
+    }
+}
+
+bool LedController::show(uint8_t position) {
+    if (position >= NUM_POSITIONS) {
+        return false;
+    }
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) {
+        return false;
+    }
+    
+    // If currently expanded/animating, clear that region first
+    if (m_positions[position].state == PositionState::ANIMATING ||
+        m_positions[position].state == PositionState::EXPANDED) {
+        clearExpandedRegion(position, mapping);
+    }
+    
+    // Set to SHOWN state
+    m_positions[position].state = PositionState::SHOWN;
+    m_positions[position].animationStep = 0;
+    
+    // Light the single LED in SHOW color (Blue)
+    setLed(mapping->strip, mapping->index, COLOR_SHOW_R, COLOR_SHOW_G, COLOR_SHOW_B);
+    m_needsUpdate = true;
+    
+    return true;
+}
+
+bool LedController::hide(uint8_t position) {
+    if (position >= NUM_POSITIONS) {
+        return false;
+    }
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) {
+        return false;
+    }
+    
+    // Clear expanded region (covers both single LED and expanded area)
+    clearExpandedRegion(position, mapping);
+    
+    // Reset state
+    m_positions[position].state = PositionState::OFF;
+    m_positions[position].animationStep = 0;
+    
+    m_needsUpdate = true;
+    
+    return true;
+}
+
+bool LedController::success(uint8_t position) {
+    if (position >= NUM_POSITIONS) {
+        return false;
+    }
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) {
+        return false;
+    }
+    
+    // If currently expanded/animating, clear that region first
+    if (m_positions[position].state == PositionState::ANIMATING ||
+        m_positions[position].state == PositionState::EXPANDED) {
+        clearExpandedRegion(position, mapping);
+    } else if (m_positions[position].state == PositionState::SHOWN) {
+        // Clear just the single LED if it was shown
+        setLed(mapping->strip, mapping->index, COLOR_OFF_R, COLOR_OFF_G, COLOR_OFF_B);
+    }
+    
+    // Start animation from center
+    m_positions[position].state = PositionState::ANIMATING;
+    m_positions[position].animationStep = 0;
+    m_positions[position].lastAnimationTime = millis();
+    
+    // Light the center LED immediately (Green)
+    setLed(mapping->strip, mapping->index, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+    m_needsUpdate = true;
+    
+    return true;
+}
+
+uint8_t LedController::charToPosition(char c) {
+    // Convert to uppercase
+    if (c >= 'a' && c <= 'y') {
+        c = c - 'a' + 'A';
+    }
+    
+    // Validate range A-Y
+    if (c >= 'A' && c <= 'Y') {
+        return c - 'A';
+    }
+    
+    return 255;  // Invalid
+}
+
+char LedController::positionToChar(uint8_t pos) {
+    if (pos < NUM_POSITIONS) {
+        return 'A' + pos;
+    }
+    return '?';
+}
+
+// ============================================================================
+// Private Methods
+// ============================================================================
+
+const LedMapping* LedController::getMapping(uint8_t position) const {
+    if (position >= NUM_POSITIONS) {
+        return nullptr;
+    }
+    return &LED_MAPPINGS[position];
+}
+
+uint16_t LedController::getStripLength(StripId strip) const {
+    switch (strip) {
+        case StripId::STRIP1:
+            return NUM_LEDS_STRIP1;
+        case StripId::STRIP2:
+            return NUM_LEDS_STRIP2;
+        default:
+            return 0;
+    }
+}
+
+Adafruit_NeoPixel* LedController::getStrip(StripId strip) {
+    switch (strip) {
+        case StripId::STRIP1:
+            return &m_strip1;
+        case StripId::STRIP2:
+            return &m_strip2;
+        default:
+            return nullptr;
+    }
+}
+
+void LedController::setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b) {
+    // Bounds check
+    if (index < 0) {
+        return;
+    }
+    
+    Adafruit_NeoPixel* stripPtr = getStrip(strip);
+    if (!stripPtr) {
+        return;
+    }
+    
+    uint16_t stripLen = getStripLength(strip);
+    if (index < (int16_t)stripLen) {
+        stripPtr->setPixelColor(index, stripPtr->Color(r, g, b));
+    }
+}
+
+void LedController::clearExpandedRegion(uint8_t position, const LedMapping* mapping) {
+    if (!mapping) {
+        return;
+    }
+    
+    uint16_t stripLen = getStripLength(mapping->strip);
+    int16_t center = mapping->index;
+    
+    // Clear center LED and expanded region (up to SUCCESS_EXPANSION_RADIUS on each side)
+    for (int16_t offset = -SUCCESS_EXPANSION_RADIUS; offset <= SUCCESS_EXPANSION_RADIUS; offset++) {
+        int16_t idx = center + offset;
+        if (idx >= 0 && idx < (int16_t)stripLen) {
+            setLed(mapping->strip, idx, COLOR_OFF_R, COLOR_OFF_G, COLOR_OFF_B);
         }
-    } else if (strips_.size() == 1) {
-        // Single strip: map A..Y to pixels 0..24
-        for (size_t i = 0; i < POS_COUNT; ++i) {
-            mapping_[i].strip = 0;
-            mapping_[i].pixelIdx = static_cast<uint16_t>(i);
-        }
     }
 }
 
-int LedController::posIndexFromChar(char position) const {
-    if (position >= 'A' && position <= 'Z') {
-        int idx = position - 'A';
-        if (idx >= 0 && idx < static_cast<int>(POS_COUNT)) return idx;
+void LedController::renderPosition(uint8_t position) {
+    if (position >= NUM_POSITIONS) {
+        return;
     }
-    if (position >= 'a' && position <= 'z') {
-        int idx = position - 'a';
-        if (idx >= 0 && idx < static_cast<int>(POS_COUNT)) return idx;
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) {
+        return;
     }
-    return -1;
-}
-
-void LedController::setPixel(const Location& loc, uint32_t color) {
-    if (loc.strip >= strips_.size()) return;
-    Adafruit_NeoPixel* s = strips_[loc.strip];
-    if (!s) return;
-    if (loc.pixelIdx >= s->numPixels()) return;
-    s->setPixelColor(loc.pixelIdx, color);
-}
-
-void LedController::applyShowsForModifiedStrips(const std::vector<bool>& modified) {
-    for (size_t i = 0; i < strips_.size(); ++i) {
-        if (modified[i] && strips_[i]) strips_[i]->show();
-    }
-}
-
-void LedController::show(char position, uint8_t r, uint8_t g, uint8_t b) {
-    int idx = posIndexFromChar(position);
-    if (idx < 0) return;
-    Location loc = mapping_[idx];
-    std::vector<bool> modified(strips_.size(), false);
-    setPixel(loc, strips_[loc.strip]->Color(r, g, b));
-    modified[loc.strip] = true;
-    applyShowsForModifiedStrips(modified);
-}
-
-void LedController::show(char position) {
-    // default color: soft white
-    show(position, 40, 40, 40);
-}
-
-void LedController::hide(char position, uint8_t radius) {
-    int center = posIndexFromChar(position);
-    if (center < 0) return;
-    std::vector<bool> modified(strips_.size(), false);
-    int start = std::max(0, center - static_cast<int>(radius));
-    int end = std::min(static_cast<int>(POS_COUNT) - 1, center + static_cast<int>(radius));
-    for (int i = start; i <= end; ++i) {
-        Location loc = mapping_[i];
-        setPixel(loc, 0); // off
-        modified[loc.strip] = true;
-    }
-    applyShowsForModifiedStrips(modified);
-}
-
-void LedController::clearAll() {
-    std::vector<bool> modified(strips_.size(), false);
-    for (size_t i = 0; i < POS_COUNT; ++i) {
-        Location loc = mapping_[i];
-        setPixel(loc, 0);
-        modified[loc.strip] = true;
-    }
-    applyShowsForModifiedStrips(modified);
-}
-
-void LedController::success(char position) {
-    int center = posIndexFromChar(position);
-    if (center < 0) return;
-
-    // Colors and timing
-    const uint8_t centerR = 0, centerG = 150, centerB = 0; // bright green
-    const uint8_t ringR = 0, ringG = 80, ringB = 0;
-    const unsigned long stepDelay = 70; // ms
-    const int maxRadius = 5;
-
-    // Expand outward step by step; set pixels, show, then continue
-    for (int step = 0; step <= maxRadius; ++step) {
-        int start = std::max(0, center - step);
-        int end = std::min(static_cast<int>(POS_COUNT) - 1, center + step);
-        std::vector<bool> modified(strips_.size(), false);
-        for (int i = start; i <= end; ++i) {
-            Location loc = mapping_[i];
-            if (i == center) {
-                setPixel(loc, strips_[loc.strip]->Color(centerR, centerG, centerB));
-            } else {
-                setPixel(loc, strips_[loc.strip]->Color(ringR, ringG, ringB));
+    
+    PositionData& data = m_positions[position];
+    uint16_t stripLen = getStripLength(mapping->strip);
+    int16_t center = mapping->index;
+    
+    switch (data.state) {
+        case PositionState::OFF:
+            // Already cleared
+            break;
+            
+        case PositionState::SHOWN:
+            setLed(mapping->strip, center, COLOR_SHOW_R, COLOR_SHOW_G, COLOR_SHOW_B);
+            break;
+            
+        case PositionState::ANIMATING:
+        case PositionState::EXPANDED: {
+            // Render center and expanded LEDs up to current step
+            uint8_t radius = data.animationStep;
+            
+            // Center LED (Green)
+            setLed(mapping->strip, center, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+            
+            // Expanded LEDs (symmetric on both sides)
+            for (uint8_t r = 1; r <= radius; r++) {
+                // Left side
+                int16_t leftIdx = center - r;
+                if (leftIdx >= 0) {
+                    setLed(mapping->strip, leftIdx, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+                }
+                
+                // Right side
+                int16_t rightIdx = center + r;
+                if (rightIdx < (int16_t)stripLen) {
+                    setLed(mapping->strip, rightIdx, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+                }
             }
-            modified[loc.strip] = true;
+            break;
         }
-        applyShowsForModifiedStrips(modified);
-        delay(stepDelay);
     }
+}
 
-    // Hold briefly then clear the expanded region
-    delay(200);
-    hide(position, maxRadius);
+void LedController::updateAnimation(uint8_t position, uint32_t nowMillis) {
+    PositionData& data = m_positions[position];
+    
+    // Check if enough time has passed for next step
+    if (nowMillis - data.lastAnimationTime < ANIMATION_STEP_MS) {
+        return;
+    }
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) {
+        return;
+    }
+    
+    // Advance animation step
+    data.animationStep++;
+    data.lastAnimationTime = nowMillis;
+    
+    // Check if animation is complete
+    if (data.animationStep >= SUCCESS_EXPANSION_RADIUS) {
+        data.animationStep = SUCCESS_EXPANSION_RADIUS;
+        data.state = PositionState::EXPANDED;
+    }
+    
+    // Render the current state
+    renderPosition(position);
+    m_needsUpdate = true;
 }

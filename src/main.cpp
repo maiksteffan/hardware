@@ -1,80 +1,138 @@
+/**
+ * =============================================================================
+ * Dual LED Strip Controller for Arduino UNO R4 WiFi
+ * =============================================================================
+ * 
+ * OVERVIEW
+ * --------
+ * This project controls two addressable LED strips via serial commands.
+ * 25 logical positions (A-Y) are mapped to physical LEDs on either strip.
+ * 
+ * HARDWARE SETUP
+ * --------------
+ * - Board:       Arduino UNO R4 WiFi
+ * - Framework:   Arduino (PlatformIO)
+ * - Strip 1:     Data pin D5
+ * - Strip 2:     Data pin D10
+ * - LED Type:    WS2812B (addressable RGB LEDs)
+ * 
+ * LIBRARY CHOICE
+ * --------------
+ * This project uses Adafruit NeoPixel instead of FastLED because:
+ * - Better compatibility with Arduino UNO R4 WiFi (Renesas RA platform)
+ * - FastLED has known compilation issues with the Renesas RA MCU
+ * - Adafruit NeoPixel is actively maintained for this platform
+ * 
+ * SERIAL PROTOCOL
+ * ---------------
+ * Baud Rate: 115200
+ * Line ending: '\n' (newline)
+ * 
+ * Commands (case-insensitive):
+ *   SHOW <pos>     - Light single LED at position in BLUE
+ *   HIDE <pos>     - Turn off LED(s) at position (including expanded region)
+ *   SUCCESS <pos>  - Play green expansion animation (up to 5 LEDs each side)
+ * 
+ * Position: A-Y (25 positions, case-insensitive)
+ * 
+ * Responses:
+ *   ACK <ACTION> <POSITION>   - Command executed successfully
+ *   ERR <reason>              - Command failed
+ *     Reasons: unknown_action, unknown_position, bad_format, 
+ *              line_too_long, command_failed
+ * 
+ * Examples:
+ *   Input:  "SHOW A\n"       -> Output: "ACK SHOW A\n"
+ *   Input:  "success b\n"    -> Output: "ACK SUCCESS B\n"
+ *   Input:  "HIDE C\n"       -> Output: "ACK HIDE C\n"
+ *   Input:  "INVALID X\n"    -> Output: "ERR unknown_action\n"
+ *   Input:  "SHOW Z\n"       -> Output: "ERR unknown_position\n"
+ * 
+ * LED POSITION MAPPINGS
+ * ---------------------
+ * Positions A-Y are mapped to specific LEDs on Strip 1 or Strip 2.
+ * Edit the LED_MAPPINGS array in LedController.cpp to match your physical layout.
+ * 
+ * Default mapping (modify as needed):
+ *   A-L: Strip 1, indices 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55
+ *   M-Y: Strip 2, indices 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 58
+ * 
+ * CONFIGURATION
+ * -------------
+ * - LED_BRIGHTNESS:          Overall brightness (0-255), default 128
+ * - COLOR_SHOW_*:            Color for SHOW command (default: Blue)
+ * - COLOR_SUCCESS_*:         Color for SUCCESS animation (default: Green)
+ * - SUCCESS_EXPANSION_RADIUS: Max expansion (default: 5 LEDs each side)
+ * - ANIMATION_STEP_MS:       Animation speed (default: 80ms per step)
+ * 
+ * See platformio.ini for strip length configuration (NUM_LEDS_STRIP1/2).
+ * 
+ * ARCHITECTURE
+ * ------------
+ * - LedController:    Manages LED buffers, rendering, animations
+ * - CommandController: Parses serial input, dispatches commands, sends responses
+ * - main.cpp:         Minimal setup/loop, wires components together
+ * 
+ * BUILD & UPLOAD
+ * --------------
+ *   pio run              # Build
+ *   pio run -t upload    # Build and upload
+ *   pio device monitor   # Open serial monitor
+ * 
+ * =============================================================================
+ */
+
 #include <Arduino.h>
-#include <Adafruit_NeoPixel.h>
-#include "ICommandController.h"
+#include "LedController.h"
+#include "CommandController.h"
 
-#define LED_COUNT 30      // change to your strip length
-#define PIN_STRIP_1 5
-#define PIN_STRIP_2 10
+// ============================================================================
+// Global Instances
+// ============================================================================
 
-Adafruit_NeoPixel strip1(LED_COUNT, PIN_STRIP_1, NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel strip2(LED_COUNT, PIN_STRIP_2, NEO_GRB + NEO_KHZ800);
+// LED controller manages both strips and animations
+LedController ledController;
 
-void setColor(uint8_t r, uint8_t g, uint8_t b) {
-  for (int i = 0; i < LED_COUNT; i++) {
-    strip1.setPixelColor(i, r, g, b);
-    strip2.setPixelColor(i, r, g, b);
-  }
-  strip1.show();
-  strip2.show();
-}
+// Command controller handles serial protocol
+CommandController commandController(ledController);
+
+// ============================================================================
+// Arduino Setup
+// ============================================================================
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial) {}   // needed on Uno R4
-
-  strip1.begin();
-  strip2.begin();
-
-  strip1.show(); // clear
-  strip2.show();
-
-  setColor(1, 1, 1);
-
-  Serial.println("Ready. Commands: red, green, blue, white, off");
+    // Initialize serial communication
+    Serial.begin(115200);
+    
+    // Wait for serial port to connect (needed for native USB)
+    // Timeout after 3 seconds to not block if no USB connected
+    uint32_t startTime = millis();
+    while (!Serial && (millis() - startTime < 3000)) {
+        // Wait
+    }
+    
+    // Initialize LED controller (sets up FastLED)
+    ledController.begin();
+    
+    // Initialize command controller
+    commandController.begin();
+    
+    // Ready message
+    Serial.println("LED Controller Ready");
+    Serial.println("Commands: SHOW <A-Y>, HIDE <A-Y>, SUCCESS <A-Y>");
 }
 
+// ============================================================================
+// Arduino Main Loop
+// ============================================================================
+
 void loop() {
-  static ICommandController* controller = nullptr;
-  if (!controller) {
-    // Reader reads from Serial when available
-    auto reader = [](std::string& out)->bool {
-      if (Serial.available()) {
-        String s = Serial.readStringUntil('\n');
-        s.trim();
-        s.toLowerCase();
-        out = std::string(s.c_str());
-        return true;
-      }
-      return false;
-    };
-
-    // Sender writes to Serial
-    auto sender = [](const std::string& msg){ Serial.println(msg.c_str()); };
-
-    controller = createCommandController(reader, sender);
-  }
-
-  if (Serial.available()) {
-    std::string cmd = controller->receiveCommand();
-
-    if (cmd == "red") {
-      setColor(40, 0, 0);
-      controller->sendCommand("ack: red");
-    } else if (cmd == "green") {
-      setColor(0, 40, 0);
-      controller->sendCommand("ack: green");
-    } else if (cmd == "blue") {
-      setColor(0, 0, 40);
-      controller->sendCommand("ack: blue");
-    } else if (cmd == "white") {
-      setColor(40, 40, 40);
-      controller->sendCommand("ack: white");
-    } else if (cmd == "off") {
-      setColor(0, 0, 0);
-      controller->sendCommand("ack: off");
-    } else {
-      Serial.println("Unknown command");
-      controller->sendCommand("ack: unknown");
-    }
-  }
+    // Get current time once per loop iteration
+    uint32_t now = millis();
+    
+    // Process serial commands (non-blocking)
+    commandController.update();
+    
+    // Update LED animations (non-blocking)
+    ledController.update(now);
 }
