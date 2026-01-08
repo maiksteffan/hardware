@@ -25,11 +25,11 @@ constexpr uint8_t STRIP2_PIN = 10;  // D10
 
 // LED counts per strip (can be overridden via build flags)
 #ifndef NUM_LEDS_STRIP1
-#define NUM_LEDS_STRIP1 150
+#define NUM_LEDS_STRIP1 190
 #endif
 
 #ifndef NUM_LEDS_STRIP2
-#define NUM_LEDS_STRIP2 150
+#define NUM_LEDS_STRIP2 190
 #endif
 
 // ============================================================================

@@ -16,8 +16,9 @@
 
 #include <Arduino.h>
 
-// Forward declaration to avoid circular dependency
+// Forward declarations to avoid circular dependency
 class LedController;
+class TouchController;
 
 // ============================================================================
 // Configuration
@@ -25,6 +26,9 @@ class LedController;
 
 // Maximum length of a command line (including null terminator)
 constexpr size_t MAX_COMMAND_LENGTH = 32;
+
+// Timeout (ms) to process command if no newline received
+constexpr uint32_t COMMAND_TIMEOUT_MS = 50;
 
 // ============================================================================
 // Command Types
@@ -34,7 +38,11 @@ enum class CommandAction : uint8_t {
     INVALID = 0,
     SHOW,
     HIDE,
-    SUCCESS
+    SUCCESS,
+    EXPECT,      // Wait for specific touch sensor
+    RECORD,      // Record first touched sensor
+    SCAN,        // Scan I2C addresses
+    RECALIBRATE  // Recalibrate touch sensors
 };
 
 // ============================================================================
@@ -46,8 +54,9 @@ public:
     /**
      * @brief Construct a new Command Controller
      * @param ledController Reference to the LED controller to dispatch commands to
+     * @param touchController Reference to the touch controller (optional, can be nullptr)
      */
-    explicit CommandController(LedController& ledController);
+    CommandController(LedController& ledController, TouchController* touchController = nullptr);
 
     /**
      * @brief Initialize the command controller
@@ -64,10 +73,16 @@ public:
 private:
     // Reference to LED controller
     LedController& m_ledController;
+    
+    // Pointer to touch controller (optional)
+    TouchController* m_touchController;
 
     // Input buffer for building command lines
     char m_buffer[MAX_COMMAND_LENGTH];
     size_t m_bufferIndex;
+    
+    // Timestamp of last received character (for timeout processing)
+    uint32_t m_lastCharTime;
 
     /**
      * @brief Process a complete command line

@@ -5,13 +5,15 @@
 
 #include "CommandController.h"
 #include "LedController.h"
+#include "TouchController.h"
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
-CommandController::CommandController(LedController& ledController)
+CommandController::CommandController(LedController& ledController, TouchController* touchController)
     : m_ledController(ledController)
+    , m_touchController(touchController)
     , m_bufferIndex(0)
 {
 }
@@ -24,12 +26,19 @@ void CommandController::begin() {
     // Clear buffer
     m_bufferIndex = 0;
     memset(m_buffer, 0, sizeof(m_buffer));
+    m_lastCharTime = 0;
 }
 
 void CommandController::update() {
     // Process all available serial data (non-blocking, handles burst input)
     while (Serial.available() > 0) {
         char c = Serial.read();
+        m_lastCharTime = millis();  // Track when we received data
+        
+        // Debug: echo received character
+        Serial.print("[RX:");
+        Serial.print((int)c);
+        Serial.print("]");
         
         // Handle line termination
         if (c == '\n' || c == '\r') {
@@ -61,6 +70,23 @@ void CommandController::update() {
                     break;
                 }
             }
+        }
+    }
+    
+    // Timeout-based processing: if we have data in buffer and no new data for a while,
+    // process the buffer even without a newline (handles senders that don't send \n)
+    if (m_bufferIndex > 0 && m_lastCharTime > 0) {
+        uint32_t elapsed = millis() - m_lastCharTime;
+        if (elapsed >= COMMAND_TIMEOUT_MS) {
+            // Null-terminate and process
+            m_buffer[m_bufferIndex] = '\0';
+            Serial.print("[TIMEOUT]");  // Debug
+            processLine(m_buffer);
+            
+            // Reset buffer
+            m_bufferIndex = 0;
+            memset(m_buffer, 0, sizeof(m_buffer));
+            m_lastCharTime = 0;
         }
     }
 }
@@ -101,6 +127,46 @@ void CommandController::processLine(const char* line) {
     CommandAction action = parseAction(actionBuf);
     if (action == CommandAction::INVALID) {
         sendError("unknown_action");
+        return;
+    }
+    
+    // Handle commands that don't require a position argument
+    if (action == CommandAction::RECORD || action == CommandAction::SCAN) {
+        // Skip whitespace after action
+        ptr = skipWhitespace(actionEnd);
+        
+        // Check for trailing garbage (ignoring whitespace)
+        if (*ptr != '\0') {
+            sendError("bad_format");
+            return;
+        }
+        
+        bool success = false;
+        
+        if (action == CommandAction::RECORD) {
+            if (m_touchController) {
+                m_touchController->startRecording();
+                success = true;
+            } else {
+                sendError("no_touch_controller");
+                return;
+            }
+        } else if (action == CommandAction::SCAN) {
+            if (m_touchController) {
+                m_touchController->scanAddresses();
+                success = true;
+            } else {
+                sendError("no_touch_controller");
+                return;
+            }
+        }
+        
+        if (success) {
+            Serial.print("ACK ");
+            Serial.println(actionToString(action));
+        } else {
+            sendError("command_failed");
+        }
         return;
     }
     
@@ -154,6 +220,24 @@ void CommandController::processLine(const char* line) {
             success = m_ledController.success(position);
             break;
             
+        case CommandAction::EXPECT:
+            if (m_touchController) {
+                success = m_touchController->expectSensor(posChar);
+            } else {
+                sendError("no_touch_controller");
+                return;
+            }
+            break;
+            
+        case CommandAction::RECALIBRATE:
+            if (m_touchController) {
+                success = m_touchController->recalibrate(position);
+            } else {
+                sendError("no_touch_controller");
+                return;
+            }
+            break;
+            
         default:
             sendError("unknown_action");
             return;
@@ -180,16 +264,32 @@ CommandAction CommandController::parseAction(const char* str) {
     if (len == 7 && strcasecmp_n(str, "SUCCESS", 7)) {
         return CommandAction::SUCCESS;
     }
+    if (len == 6 && strcasecmp_n(str, "EXPECT", 6)) {
+        return CommandAction::EXPECT;
+    }
+    if (len == 6 && strcasecmp_n(str, "RECORD", 6)) {
+        return CommandAction::RECORD;
+    }
+    if (len == 4 && strcasecmp_n(str, "SCAN", 4)) {
+        return CommandAction::SCAN;
+    }
+    if (len == 11 && strcasecmp_n(str, "RECALIBRATE", 11)) {
+        return CommandAction::RECALIBRATE;
+    }
     
     return CommandAction::INVALID;
 }
 
 const char* CommandController::actionToString(CommandAction action) {
     switch (action) {
-        case CommandAction::SHOW:    return "SHOW";
-        case CommandAction::HIDE:    return "HIDE";
-        case CommandAction::SUCCESS: return "SUCCESS";
-        default:                     return "UNKNOWN";
+        case CommandAction::SHOW:        return "SHOW";
+        case CommandAction::HIDE:        return "HIDE";
+        case CommandAction::SUCCESS:     return "SUCCESS";
+        case CommandAction::EXPECT:      return "EXPECT";
+        case CommandAction::RECORD:      return "RECORD";
+        case CommandAction::SCAN:        return "SCAN";
+        case CommandAction::RECALIBRATE: return "RECALIBRATE";
+        default:                         return "UNKNOWN";
     }
 }
 

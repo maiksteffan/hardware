@@ -19,55 +19,55 @@
 
 static const LedMapping LED_MAPPINGS[NUM_POSITIONS] = {
     // Position A (index 0)
-    { StripId::STRIP1, 0 },
+    { StripId::STRIP1, 153 },
     // Position B (index 1)
-    { StripId::STRIP1, 5 },
+    { StripId::STRIP1, 165 },
     // Position C (index 2)
-    { StripId::STRIP1, 10 },
+    { StripId::STRIP1, 177 },
     // Position D (index 3)
-    { StripId::STRIP1, 15 },
+    { StripId::STRIP2, 177 },
     // Position E (index 4)
-    { StripId::STRIP1, 20 },
+    { StripId::STRIP2, 165 },
     // Position F (index 5)
-    { StripId::STRIP1, 25 },
+    { StripId::STRIP2, 153 },
     // Position G (index 6)
-    { StripId::STRIP1, 30 },
+    { StripId::STRIP1, 130 },
     // Position H (index 7)
-    { StripId::STRIP1, 35 },
+    { StripId::STRIP1, 118 },
     // Position I (index 8)
-    { StripId::STRIP1, 40 },
+    { StripId::STRIP1, 105 },
     // Position J (index 9)
-    { StripId::STRIP1, 45 },
+    { StripId::STRIP1, 92 },
     // Position K (index 10)
-    { StripId::STRIP1, 50 },
+    { StripId::STRIP2, 105 },
     // Position L (index 11)
-    { StripId::STRIP1, 55 },
+    { StripId::STRIP2, 118 },
     // Position M (index 12)
-    { StripId::STRIP2, 0 },
+    { StripId::STRIP2, 130 },
     // Position N (index 13)
-    { StripId::STRIP2, 5 },
+    { StripId::STRIP1, 55 },
     // Position O (index 14)
-    { StripId::STRIP2, 10 },
+    { StripId::STRIP1, 67 },
     // Position P (index 15)
-    { StripId::STRIP2, 15 },
+    { StripId::STRIP1, 79 },
     // Position Q (index 16)
-    { StripId::STRIP2, 20 },
+    { StripId::STRIP2, 79 },
     // Position R (index 17)
-    { StripId::STRIP2, 25 },
+    { StripId::STRIP2, 67 },
     // Position S (index 18)
-    { StripId::STRIP2, 30 },
-    // Position T (index 19)
-    { StripId::STRIP2, 35 },
-    // Position U (index 20)
-    { StripId::STRIP2, 40 },
-    // Position V (index 21)
-    { StripId::STRIP2, 45 },
-    // Position W (index 22)
-    { StripId::STRIP2, 50 },
-    // Position X (index 23)
     { StripId::STRIP2, 55 },
+    // Position T (index 19)
+    { StripId::STRIP1, 34 },
+    // Position U (index 20)
+    { StripId::STRIP1, 22 },
+    // Position V (index 21)
+    { StripId::STRIP1, 10 },
+    // Position W (index 22)
+    { StripId::STRIP2, 10 },
+    // Position X (index 23)
+    { StripId::STRIP2, 22 },
     // Position Y (index 24)
-    { StripId::STRIP2, 58 }
+    { StripId::STRIP2, 34 }
 };
 
 // ============================================================================

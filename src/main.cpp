@@ -85,6 +85,7 @@
 #include <Arduino.h>
 #include "LedController.h"
 #include "CommandController.h"
+#include "TouchController.h"
 
 // ============================================================================
 // Global Instances
@@ -93,8 +94,11 @@
 // LED controller manages both strips and animations
 LedController ledController;
 
-// Command controller handles serial protocol
-CommandController commandController(ledController);
+// Touch controller manages CAP1188 touch sensors
+TouchController touchController;
+
+// Command controller handles serial protocol (with touch controller reference)
+CommandController commandController(ledController, &touchController);
 
 // ============================================================================
 // Arduino Setup
@@ -114,12 +118,16 @@ void setup() {
     // Initialize LED controller (sets up FastLED)
     ledController.begin();
     
+    // Initialize touch controller (sets up I2C and CAP1188 sensors)
+    touchController.begin();
+    
     // Initialize command controller
     commandController.begin();
     
     // Ready message
-    Serial.println("LED Controller Ready");
+    Serial.println("LED & Touch Controller Ready");
     Serial.println("Commands: SHOW <A-Y>, HIDE <A-Y>, SUCCESS <A-Y>");
+    Serial.println("          EXPECT <A-Y>, RECORD, SCAN, RECALIBRATE <A-Y>");
 }
 
 // ============================================================================
@@ -132,6 +140,9 @@ void loop() {
     
     // Process serial commands (non-blocking)
     commandController.update();
+    
+    // Update touch sensor state (non-blocking)
+    touchController.update();
     
     // Update LED animations (non-blocking)
     ledController.update(now);
