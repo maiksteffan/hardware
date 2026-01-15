@@ -6,14 +6,17 @@
 #include "CommandController.h"
 #include "LedController.h"
 #include "TouchController.h"
+#include "SequenceController.h"
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
-CommandController::CommandController(LedController& ledController, TouchController* touchController)
+CommandController::CommandController(LedController& ledController, TouchController* touchController,
+                                     SequenceController* sequenceController)
     : m_ledController(ledController)
     , m_touchController(touchController)
+    , m_sequenceController(sequenceController)
     , m_bufferIndex(0)
 {
 }
@@ -127,6 +130,49 @@ void CommandController::processLine(const char* line) {
     CommandAction action = parseAction(actionBuf);
     if (action == CommandAction::INVALID) {
         sendError("unknown_action");
+        return;
+    }
+    
+    // Handle SEQUENCE command: SEQUENCE(A,B,C,D)
+    if (action == CommandAction::SEQUENCE) {
+        // Find opening parenthesis
+        ptr = actionEnd;
+        while (*ptr == ' ' || *ptr == '\t') ptr++;
+        
+        if (*ptr != '(') {
+            sendError("bad_format");
+            return;
+        }
+        ptr++;  // Skip '('
+        
+        // Find closing parenthesis
+        const char* seqStart = ptr;
+        while (*ptr != '\0' && *ptr != ')') ptr++;
+        
+        if (*ptr != ')') {
+            sendError("bad_format");
+            return;
+        }
+        
+        // Extract sequence string
+        size_t seqLen = ptr - seqStart;
+        char seqBuf[64];
+        if (seqLen >= sizeof(seqBuf)) {
+            sendError("sequence_too_long");
+            return;
+        }
+        memcpy(seqBuf, seqStart, seqLen);
+        seqBuf[seqLen] = '\0';
+        
+        // Start the sequence
+        if (m_sequenceController) {
+            if (m_sequenceController->startSequence(seqBuf)) {
+                Serial.println("ACK SEQUENCE");
+            }
+            // Error messages are printed by SequenceController
+        } else {
+            sendError("no_sequence_controller");
+        }
         return;
     }
     
@@ -276,6 +322,9 @@ CommandAction CommandController::parseAction(const char* str) {
     if (len == 11 && strcasecmp_n(str, "RECALIBRATE", 11)) {
         return CommandAction::RECALIBRATE;
     }
+    if (len == 8 && strcasecmp_n(str, "SEQUENCE", 8)) {
+        return CommandAction::SEQUENCE;
+    }
     
     return CommandAction::INVALID;
 }
@@ -289,6 +338,7 @@ const char* CommandController::actionToString(CommandAction action) {
         case CommandAction::RECORD:      return "RECORD";
         case CommandAction::SCAN:        return "SCAN";
         case CommandAction::RECALIBRATE: return "RECALIBRATE";
+        case CommandAction::SEQUENCE:    return "SEQUENCE";
         default:                         return "UNKNOWN";
     }
 }
@@ -313,7 +363,7 @@ const char* CommandController::skipWhitespace(const char* str) {
 }
 
 const char* CommandController::findTokenEnd(const char* str) {
-    while (*str != '\0' && *str != ' ' && *str != '\t' && *str != '\n' && *str != '\r') {
+    while (*str != '\0' && *str != ' ' && *str != '\t' && *str != '\n' && *str != '\r' && *str != '(') {
         str++;
     }
     return str;

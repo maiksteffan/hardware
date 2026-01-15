@@ -19,6 +19,7 @@
 // Forward declarations to avoid circular dependency
 class LedController;
 class TouchController;
+class SequenceController;
 
 // ============================================================================
 // Configuration
@@ -42,7 +43,8 @@ enum class CommandAction : uint8_t {
     EXPECT,      // Wait for specific touch sensor
     RECORD,      // Record first touched sensor
     SCAN,        // Scan I2C addresses
-    RECALIBRATE  // Recalibrate touch sensors
+    RECALIBRATE, // Recalibrate touch sensors
+    SEQUENCE     // Start a sequence like SEQUENCE(A,B,C,D)
 };
 
 // ============================================================================
@@ -55,8 +57,10 @@ public:
      * @brief Construct a new Command Controller
      * @param ledController Reference to the LED controller to dispatch commands to
      * @param touchController Reference to the touch controller (optional, can be nullptr)
+     * @param sequenceController Reference to the sequence controller (optional, can be nullptr)
      */
-    CommandController(LedController& ledController, TouchController* touchController = nullptr);
+    CommandController(LedController& ledController, TouchController* touchController = nullptr, 
+                      SequenceController* sequenceController = nullptr);
 
     /**
      * @brief Initialize the command controller
@@ -76,6 +80,9 @@ private:
     
     // Pointer to touch controller (optional)
     TouchController* m_touchController;
+    
+    // Pointer to sequence controller (optional)
+    SequenceController* m_sequenceController;
 
     // Input buffer for building command lines
     char m_buffer[MAX_COMMAND_LENGTH];

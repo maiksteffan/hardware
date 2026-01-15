@@ -16,6 +16,9 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+
+// Forward declaration for callback
+class SequenceController;
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -51,32 +54,33 @@ constexpr uint16_t TOUCH_SCAN_INTERVAL_MS = 20;
  * Modify this array to match your physical wiring!
  */
 constexpr uint8_t SENSOR_I2C_ADDRESSES[NUM_TOUCH_SENSORS] = {
-    0x28,  // A
-    0x29,  // B
-    0x2A,  // C
-    0x2B,  // D
-    0x2C,  // E
-    0x2D,  // F
-    0x2E,  // G
-    0x2F,  // H
-    0x30,  // I
-    0x31,  // J
-    0x32,  // K
-    0x33,  // L
-    0x34,  // M
-    0x35,  // N
-    0x36,  // O
-    0x37,  // P
-    0x38,  // Q
-    0x39,  // R
-    0x3A,  // S
-    0x3B,  // T
-    0x3C,  // U
-    0x3D,  // V
-    0x3E,  // W
-    0x3F,  // X
-    0x40   // Y
+    0x1F,  // A  (old P)
+    0x1E,  // B  (old O)
+    0x1D,  // C  (old N)
+    0x1C,  // D  (old M)
+    0x3F,  // E  (old L)
+    0x1A,  // F  (old K)
+    0x28,  // G  (old Q)  <-- assumed fix (Q->G)
+    0x29,  // H  (old R)
+    0x2A,  // I  (old S)
+    0x0E,  // J  (old G)
+    0x0F,  // K  (old H)
+    0x18,  // L  (old I)
+    0x19,  // M  (old J)
+    0x3C,  // N  (old W)  <-- assumed
+    0x2F,  // O  (old X)  <-- assumed
+    0x38,  // P  (old Y)  <-- assumed
+    0x0D,  // Q  (old F)
+    0x0C,  // R  (old E)
+    0x0B,  // S  (old D)
+    0x3E,  // T  (old T)
+    0x2C,  // U  (old U)
+    0x3D,  // V  (old V)
+    0x08,  // W  (old A)
+    0x09,  // X  (old B)
+    0x0A   // Y  (old C)
 };
+
 
 // ============================================================================
 // Controller Mode
@@ -165,6 +169,12 @@ public:
      */
     void recalibrateAll();
 
+    /**
+     * @brief Set callback for touch events
+     * @param callback Function pointer to call when touch is detected (receives letter A-Y)
+     */
+    void setTouchCallback(void (*callback)(char));
+
     // ========================================================================
     // Static Utility Methods
     // ========================================================================
@@ -190,6 +200,12 @@ public:
      */
     static uint8_t addressToIndex(uint8_t address);
 
+    /**
+     * @brief Try to recover a stuck I2C bus
+     * Toggles SCL to release any slaves holding SDA low
+     */
+    void recoverI2CBus();
+
 private:
     // Current operating mode
     TouchMode m_mode;
@@ -202,6 +218,9 @@ private:
 
     // Timestamp of last sensor scan
     uint32_t m_lastScanTime;
+
+    // Callback for touch events
+    void (*m_touchCallback)(char);
 
     /**
      * @brief Initialize a single CAP1188 sensor

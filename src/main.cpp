@@ -86,6 +86,7 @@
 #include "LedController.h"
 #include "CommandController.h"
 #include "TouchController.h"
+#include "SequenceController.h"
 
 // ============================================================================
 // Global Instances
@@ -97,8 +98,19 @@ LedController ledController;
 // Touch controller manages CAP1188 touch sensors
 TouchController touchController;
 
-// Command controller handles serial protocol (with touch controller reference)
-CommandController commandController(ledController, &touchController);
+// Sequence controller manages LED/touch sequences
+SequenceController sequenceController(ledController, touchController);
+
+// Command controller handles serial protocol (with touch and sequence controller references)
+CommandController commandController(ledController, &touchController, &sequenceController);
+
+// ============================================================================
+// Touch Callback - bridges TouchController to SequenceController
+// ============================================================================
+
+void onTouchDetected(char letter) {
+    sequenceController.onTouched(letter);
+}
 
 // ============================================================================
 // Arduino Setup
@@ -121,6 +133,12 @@ void setup() {
     // Initialize touch controller (sets up I2C and CAP1188 sensors)
     touchController.begin();
     
+    // Register touch callback to notify sequence controller
+    touchController.setTouchCallback(onTouchDetected);
+    
+    // Initialize sequence controller
+    sequenceController.begin();
+    
     // Initialize command controller
     commandController.begin();
     
@@ -128,6 +146,7 @@ void setup() {
     Serial.println("LED & Touch Controller Ready");
     Serial.println("Commands: SHOW <A-Y>, HIDE <A-Y>, SUCCESS <A-Y>");
     Serial.println("          EXPECT <A-Y>, RECORD, SCAN, RECALIBRATE <A-Y>");
+    Serial.println("          SEQUENCE(A,B,C,...)");
 }
 
 // ============================================================================
@@ -143,6 +162,9 @@ void loop() {
     
     // Update touch sensor state (non-blocking)
     touchController.update();
+    
+    // Update sequence controller state (non-blocking)
+    sequenceController.update();
     
     // Update LED animations (non-blocking)
     ledController.update(now);

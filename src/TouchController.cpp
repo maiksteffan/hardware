@@ -13,6 +13,7 @@ TouchController::TouchController()
     : m_mode(TouchMode::IDLE)
     , m_expectedSensorIndex(255)
     , m_lastScanTime(0)
+    , m_touchCallback(nullptr)
 {
     // Initialize all sensors as inactive
     for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
@@ -27,6 +28,15 @@ TouchController::TouchController()
 bool TouchController::begin() {
     // Initialize I2C (Wire library)
     Wire.begin();
+    
+    // Set I2C clock to 100kHz for better reliability with multiple devices
+    Wire.setClock(100000);
+    
+    // Small delay after I2C init
+    delay(100);
+    
+    // Try to recover I2C bus if it's stuck
+    recoverI2CBus();
     
     uint8_t successCount = 0;
     
@@ -93,8 +103,13 @@ void TouchController::update() {
                 // In EXPECT mode, only respond if this is the expected sensor
                 if (i == m_expectedSensorIndex) {
                     sendTouched(letter);
+                    // Reset state BEFORE calling callback so callback can set up next expect
                     m_mode = TouchMode::IDLE;
                     m_expectedSensorIndex = 255;
+                    // Now call callback (which may set new expect)
+                    if (m_touchCallback) {
+                        m_touchCallback(letter);
+                    }
                 }
                 // Ignore touches on other sensors in EXPECT mode
             } 
@@ -146,11 +161,18 @@ void TouchController::scanAddresses() {
     Serial.println("I2C Address Scan:");
     Serial.println("-----------------");
     
+    // Try to recover I2C bus first
+    recoverI2CBus();
+    delay(50);
+    
     uint8_t foundCount = 0;
     
     for (uint8_t address = 1; address < 127; address++) {
         Wire.beginTransmission(address);
         uint8_t error = Wire.endTransmission();
+        
+        // Small delay between probes for bus stability
+        delayMicroseconds(100);
         
         if (error == 0) {
             Serial.print("  0x");
@@ -225,6 +247,10 @@ void TouchController::recalibrateAll() {
     Serial.println("Recalibration complete");
 }
 
+void TouchController::setTouchCallback(void (*callback)(char)) {
+    m_touchCallback = callback;
+}
+
 // ============================================================================
 // Static Utility Methods
 // ============================================================================
@@ -256,6 +282,39 @@ uint8_t TouchController::addressToIndex(uint8_t address) {
         }
     }
     return 255;  // Not found
+}
+
+void TouchController::recoverI2CBus() {
+    // Try to recover a stuck I2C bus by toggling SCL
+    // This can help if a slave device is holding SDA low
+    
+    Wire.end();
+    
+    // On Arduino UNO R4 WiFi, SDA = A4 (pin 18), SCL = A5 (pin 19)
+    // Toggle SCL to try to release any stuck slaves
+    pinMode(A5, OUTPUT);
+    pinMode(A4, INPUT_PULLUP);
+    
+    for (int i = 0; i < 9; i++) {
+        digitalWrite(A5, LOW);
+        delayMicroseconds(5);
+        digitalWrite(A5, HIGH);
+        delayMicroseconds(5);
+    }
+    
+    // Generate STOP condition
+    pinMode(A4, OUTPUT);
+    digitalWrite(A4, LOW);
+    delayMicroseconds(5);
+    digitalWrite(A5, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(A4, HIGH);
+    delayMicroseconds(5);
+    
+    // Reinitialize I2C
+    Wire.begin();
+    Wire.setClock(100000);
+    delay(10);
 }
 
 // ============================================================================
@@ -301,8 +360,11 @@ bool TouchController::readRegister(uint8_t address, uint8_t reg, uint8_t& value)
     Wire.beginTransmission(address);
     Wire.write(reg);
     if (Wire.endTransmission(false) != 0) {
+        delayMicroseconds(50);
         return false;
     }
+    
+    delayMicroseconds(50);  // Small delay before read
     
     if (Wire.requestFrom(address, (uint8_t)1) != 1) {
         return false;
@@ -316,7 +378,9 @@ bool TouchController::writeRegister(uint8_t address, uint8_t reg, uint8_t value)
     Wire.beginTransmission(address);
     Wire.write(reg);
     Wire.write(value);
-    return Wire.endTransmission() == 0;
+    uint8_t result = Wire.endTransmission();
+    delayMicroseconds(50);  // Small delay after write
+    return result == 0;
 }
 
 bool TouchController::isTouched(uint8_t address) {
