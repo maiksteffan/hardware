@@ -1,23 +1,36 @@
 /**
  * @file TouchController.cpp
- * @brief Implementation of touch sensor controller for 25 CAP1188 sensors
+ * @brief Implementation of event-driven touch sensor controller
+ * 
+ * Protocol v2: Always polls sensors, emits TOUCH_DOWN/TOUCH_UP events
+ * with debouncing for reliable detection.
  */
 
 #include "TouchController.h"
+#include "EventQueue.h"
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
 TouchController::TouchController()
-    : m_mode(TouchMode::IDLE)
-    , m_expectedSensorIndex(255)
-    , m_lastScanTime(0)
-    , m_touchCallback(nullptr)
+    : m_eventQueue(nullptr)
+    , m_lastPollTime(0)
+    , m_activeSensorCount(0)
 {
-    // Initialize all sensors as inactive
+    // Initialize all sensor states
     for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
-        m_sensorActive[i] = false;
+        m_sensors[i].active = false;
+        m_sensors[i].currentTouched = false;
+        m_sensors[i].debouncedTouched = false;
+        m_sensors[i].lastReportedTouched = false;
+        m_sensors[i].lastChangeTime = 0;
+        
+        // Initialize expectation states
+        m_expectDown[i].active = false;
+        m_expectDown[i].commandId = NO_COMMAND_ID;
+        m_expectUp[i].active = false;
+        m_expectUp[i].commandId = NO_COMMAND_ID;
     }
 }
 
@@ -25,195 +38,58 @@ TouchController::TouchController()
 // Public Methods
 // ============================================================================
 
+void TouchController::setEventQueue(EventQueue* eventQueue) {
+    m_eventQueue = eventQueue;
+}
+
 bool TouchController::begin() {
-    // Initialize I2C (Wire library)
+    // Initialize I2C
     Wire.begin();
-    
-    // Set I2C clock to 100kHz for better reliability with multiple devices
-    Wire.setClock(100000);
+    Wire.setClock(I2C_CLOCK_SPEED);
     
     // Small delay after I2C init
     delay(100);
     
-    // Try to recover I2C bus if it's stuck
+    // Try to recover I2C bus if stuck
     recoverI2CBus();
     
-    uint8_t successCount = 0;
-    
-    Serial.println("TouchController: Initializing sensors...");
+    m_activeSensorCount = 0;
     
     // Initialize each sensor
     for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
         uint8_t address = SENSOR_I2C_ADDRESSES[i];
         
         if (initSensor(address)) {
-            m_sensorActive[i] = true;
-            successCount++;
-            Serial.print("  Sensor ");
-            Serial.print(indexToLetter(i));
-            Serial.print(" (0x");
-            Serial.print(address, HEX);
-            Serial.println("): OK");
+            m_sensors[i].active = true;
+            m_activeSensorCount++;
         } else {
-            m_sensorActive[i] = false;
-            Serial.print("  Sensor ");
-            Serial.print(indexToLetter(i));
-            Serial.print(" (0x");
-            Serial.print(address, HEX);
-            Serial.println("): FAILED");
+            m_sensors[i].active = false;
         }
+        
+        // Reset state
+        m_sensors[i].currentTouched = false;
+        m_sensors[i].debouncedTouched = false;
+        m_sensors[i].lastReportedTouched = false;
+        m_sensors[i].lastChangeTime = 0;
     }
     
-    Serial.print("TouchController: ");
-    Serial.print(successCount);
-    Serial.print("/");
-    Serial.print(NUM_TOUCH_SENSORS);
-    Serial.println(" sensors initialized");
-    
-    return successCount > 0;
+    return m_activeSensorCount > 0;
 }
 
-void TouchController::update() {
-    // Rate limit sensor scanning to prevent excessive I2C traffic
+void TouchController::tick() {
     uint32_t now = millis();
-    if (now - m_lastScanTime < TOUCH_SCAN_INTERVAL_MS) {
+    
+    // Rate limit sensor polling
+    if (now - m_lastPollTime < TOUCH_POLL_INTERVAL_MS) {
         return;
     }
-    m_lastScanTime = now;
+    m_lastPollTime = now;
     
-    // If idle, no need to scan (optimization)
-    if (m_mode == TouchMode::IDLE) {
-        return;
-    }
+    // Poll all sensors
+    pollSensors();
     
-    // Scan all active sensors for touch
-    for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
-        // Skip inactive sensors
-        if (!m_sensorActive[i]) {
-            continue;
-        }
-        
-        uint8_t address = SENSOR_I2C_ADDRESSES[i];
-        
-        // Check if CS1 is touched
-        if (isTouched(address)) {
-            char letter = indexToLetter(i);
-            
-            if (m_mode == TouchMode::EXPECT) {
-                // In EXPECT mode, only respond if this is the expected sensor
-                if (i == m_expectedSensorIndex) {
-                    sendTouched(letter);
-                    // Reset state BEFORE calling callback so callback can set up next expect
-                    m_mode = TouchMode::IDLE;
-                    m_expectedSensorIndex = 255;
-                    // Now call callback (which may set new expect)
-                    if (m_touchCallback) {
-                        m_touchCallback(letter);
-                    }
-                }
-                // Ignore touches on other sensors in EXPECT mode
-            } 
-            else if (m_mode == TouchMode::RECORD) {
-                // In RECORD mode, respond to first touch on any sensor
-                sendRecorded(letter);
-                m_mode = TouchMode::IDLE;
-                return;  // Only record first touch
-            }
-        }
-    }
-}
-
-bool TouchController::expectSensor(char letter) {
-    uint8_t index = letterToIndex(letter);
-    
-    if (index >= NUM_TOUCH_SENSORS) {
-        return false;  // Invalid letter
-    }
-    
-    if (!m_sensorActive[index]) {
-        Serial.print("WARN: Sensor ");
-        Serial.print((char)toupper(letter));
-        Serial.println(" is not active");
-        // Still allow expect mode even if sensor failed init (might work later)
-    }
-    
-    m_expectedSensorIndex = index;
-    m_mode = TouchMode::EXPECT;
-    
-    return true;
-}
-
-void TouchController::startRecording() {
-    m_mode = TouchMode::RECORD;
-    m_expectedSensorIndex = 255;  // Clear any previous expectation
-}
-
-void TouchController::cancelOperation() {
-    m_mode = TouchMode::IDLE;
-    m_expectedSensorIndex = 255;
-}
-
-bool TouchController::isIdle() const {
-    return m_mode == TouchMode::IDLE;
-}
-
-void TouchController::scanAddresses() {
-    Serial.println("I2C Address Scan:");
-    Serial.println("-----------------");
-    
-    // Try to recover I2C bus first
-    recoverI2CBus();
-    delay(50);
-    
-    uint8_t foundCount = 0;
-    
-    for (uint8_t address = 1; address < 127; address++) {
-        Wire.beginTransmission(address);
-        uint8_t error = Wire.endTransmission();
-        
-        // Small delay between probes for bus stability
-        delayMicroseconds(100);
-        
-        if (error == 0) {
-            Serial.print("  0x");
-            if (address < 16) {
-                Serial.print("0");
-            }
-            Serial.print(address, HEX);
-            
-            // Check if this is one of our sensor addresses
-            uint8_t sensorIndex = addressToIndex(address);
-            if (sensorIndex < NUM_TOUCH_SENSORS) {
-                Serial.print(" <- Sensor ");
-                Serial.print(indexToLetter(sensorIndex));
-            }
-            Serial.println();
-            foundCount++;
-        }
-    }
-    
-    Serial.print("Found ");
-    Serial.print(foundCount);
-    Serial.println(" I2C devices");
-}
-
-bool TouchController::setSensitivity(uint8_t sensorIndex, uint8_t level) {
-    if (sensorIndex >= NUM_TOUCH_SENSORS) {
-        return false;
-    }
-    
-    // Clamp level to valid range (0-7)
-    if (level > 7) {
-        level = 7;
-    }
-    
-    uint8_t address = SENSOR_I2C_ADDRESSES[sensorIndex];
-    
-    // Sensitivity is stored in bits 6:4 of register 0x1F
-    // The remaining bits control delta sense, keep default (0x2F base value)
-    uint8_t regValue = 0x20 | (level << 4);
-    
-    return writeRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, regValue);
+    // Process debouncing and emit events
+    processDebounce();
 }
 
 bool TouchController::recalibrate(uint8_t sensorIndex) {
@@ -221,34 +97,99 @@ bool TouchController::recalibrate(uint8_t sensorIndex) {
         return false;
     }
     
+    if (!m_sensors[sensorIndex].active) {
+        return false;
+    }
+    
     uint8_t address = SENSOR_I2C_ADDRESSES[sensorIndex];
     
-    // Write 0x01 to trigger recalibration of CS1
+    // Write to trigger recalibration of CS1
     return writeRegister(address, CAP1188_REG_CALIBRATION_ACTIVE, CS1_BIT_MASK);
 }
 
 void TouchController::recalibrateAll() {
-    Serial.println("Recalibrating all sensors...");
-    
     for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
-        if (m_sensorActive[i]) {
-            if (recalibrate(i)) {
-                Serial.print("  Sensor ");
-                Serial.print(indexToLetter(i));
-                Serial.println(": OK");
-            } else {
-                Serial.print("  Sensor ");
-                Serial.print(indexToLetter(i));
-                Serial.println(": FAILED");
-            }
+        if (m_sensors[i].active) {
+            recalibrate(i);
         }
     }
-    
-    Serial.println("Recalibration complete");
 }
 
-void TouchController::setTouchCallback(void (*callback)(char)) {
-    m_touchCallback = callback;
+void TouchController::setExpectDown(uint8_t sensorIndex, uint32_t commandId) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return;
+    }
+    m_expectDown[sensorIndex].active = true;
+    m_expectDown[sensorIndex].commandId = commandId;
+}
+
+void TouchController::setExpectUp(uint8_t sensorIndex, uint32_t commandId) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return;
+    }
+    m_expectUp[sensorIndex].active = true;
+    m_expectUp[sensorIndex].commandId = commandId;
+}
+
+void TouchController::clearExpectDown(uint8_t sensorIndex) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return;
+    }
+    m_expectDown[sensorIndex].active = false;
+    m_expectDown[sensorIndex].commandId = NO_COMMAND_ID;
+}
+
+void TouchController::clearExpectUp(uint8_t sensorIndex) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return;
+    }
+    m_expectUp[sensorIndex].active = false;
+    m_expectUp[sensorIndex].commandId = NO_COMMAND_ID;
+}
+
+void TouchController::buildActiveSensorList(char* buffer, size_t bufferSize) const {
+    if (bufferSize == 0) {
+        return;
+    }
+    
+    buffer[0] = '\0';
+    size_t pos = 0;
+    bool first = true;
+    
+    for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
+        if (m_sensors[i].active) {
+            // Need room for comma (if not first) + letter + null terminator
+            size_t needed = first ? 2 : 3;
+            if (pos + needed > bufferSize) {
+                break;  // Buffer full
+            }
+            
+            if (!first) {
+                buffer[pos++] = ',';
+            }
+            buffer[pos++] = indexToLetter(i);
+            buffer[pos] = '\0';
+            first = false;
+        }
+    }
+}
+
+bool TouchController::isSensorActive(uint8_t sensorIndex) const {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return false;
+    }
+    return m_sensors[sensorIndex].active;
+}
+
+bool TouchController::isTouched(uint8_t sensorIndex) const {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) {
+        return false;
+    }
+    return m_sensors[sensorIndex].debouncedTouched;
+}
+
+uint8_t TouchController::getActiveSensorCount() const {
+    return m_activeSensorCount;
 }
 
 // ============================================================================
@@ -258,7 +199,7 @@ void TouchController::setTouchCallback(void (*callback)(char)) {
 uint8_t TouchController::letterToIndex(char letter) {
     // Convert to uppercase
     if (letter >= 'a' && letter <= 'y') {
-        letter -= 32;  // Convert to uppercase
+        letter -= 32;
     }
     
     if (letter >= 'A' && letter <= 'Y') {
@@ -284,17 +225,101 @@ uint8_t TouchController::addressToIndex(uint8_t address) {
     return 255;  // Not found
 }
 
-void TouchController::recoverI2CBus() {
-    // Try to recover a stuck I2C bus by toggling SCL
-    // This can help if a slave device is holding SDA low
+// ============================================================================
+// Private Methods
+// ============================================================================
+
+bool TouchController::initSensor(uint8_t address) {
+    // Check if sensor responds
+    Wire.beginTransmission(address);
+    if (Wire.endTransmission() != 0) {
+        return false;
+    }
     
+    // Enable only CS1 input (bit 0)
+    if (!writeRegister(address, CAP1188_REG_SENSOR_INPUT_ENABLE, CS1_BIT_MASK)) {
+        return false;
+    }
+    
+    // Set default sensitivity
+    // Sensitivity register 0x1F: bits 6:4 = sensitivity (0-7)
+    uint8_t sensitivityValue = 0x20 | (DEFAULT_SENSITIVITY << 4);
+    if (!writeRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, sensitivityValue)) {
+        return false;
+    }
+    
+    // Clear any pending interrupts
+    uint8_t dummy;
+    readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, dummy);
+    
+    // Clear interrupt flag in main control register
+    uint8_t mainControl;
+    if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
+        mainControl &= ~0x01;  // Clear INT bit
+        writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
+    }
+    
+    return true;
+}
+
+bool TouchController::readRegister(uint8_t address, uint8_t reg, uint8_t& value) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) {
+        delayMicroseconds(50);
+        return false;
+    }
+    
+    delayMicroseconds(50);
+    
+    if (Wire.requestFrom(address, (uint8_t)1) != 1) {
+        return false;
+    }
+    
+    value = Wire.read();
+    return true;
+}
+
+bool TouchController::writeRegister(uint8_t address, uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    Wire.write(value);
+    uint8_t result = Wire.endTransmission();
+    delayMicroseconds(50);
+    return result == 0;
+}
+
+bool TouchController::readRawTouch(uint8_t address) {
+    uint8_t status;
+    
+    // Read sensor input status register
+    if (!readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, status)) {
+        return false;
+    }
+    
+    // Check if CS1 is touched (bit 0)
+    bool touched = (status & CS1_BIT_MASK) != 0;
+    
+    if (touched) {
+        // Clear the interrupt flag
+        uint8_t mainControl;
+        if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
+            mainControl &= ~0x01;
+            writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
+        }
+    }
+    
+    return touched;
+}
+
+void TouchController::recoverI2CBus() {
     Wire.end();
     
     // On Arduino UNO R4 WiFi, SDA = A4 (pin 18), SCL = A5 (pin 19)
-    // Toggle SCL to try to release any stuck slaves
     pinMode(A5, OUTPUT);
     pinMode(A4, INPUT_PULLUP);
     
+    // Toggle SCL to release stuck slaves
     for (int i = 0; i < 9; i++) {
         digitalWrite(A5, LOW);
         delayMicroseconds(5);
@@ -313,106 +338,84 @@ void TouchController::recoverI2CBus() {
     
     // Reinitialize I2C
     Wire.begin();
-    Wire.setClock(100000);
+    Wire.setClock(I2C_CLOCK_SPEED);
     delay(10);
 }
 
-// ============================================================================
-// Private Methods
-// ============================================================================
-
-bool TouchController::initSensor(uint8_t address) {
-    // Check if sensor responds
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() != 0) {
-        return false;  // Sensor not responding
-    }
+void TouchController::pollSensors() {
+    uint32_t now = millis();
     
-    // Enable only CS1 input (bit 0 = CS1)
-    if (!writeRegister(address, CAP1188_REG_SENSOR_INPUT_ENABLE, CS1_BIT_MASK)) {
-        return false;
-    }
-    
-    // Set default sensitivity
-    // Sensitivity register 0x1F: bits 6:4 = sensitivity (0-7)
-    // Lower value = more sensitive, default is 0x2F (sensitivity = 2)
-    uint8_t sensitivityValue = 0x20 | (DEFAULT_SENSITIVITY << 4);
-    if (!writeRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, sensitivityValue)) {
-        return false;
-    }
-    
-    // Clear any pending interrupts by reading the status register
-    uint8_t dummy;
-    readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, dummy);
-    
-    // Clear the interrupt flag in main control register
-    // Read current value, clear INT bit (bit 0), write back
-    uint8_t mainControl;
-    if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
-        mainControl &= ~0x01;  // Clear INT bit
-        writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
-    }
-    
-    return true;
-}
-
-bool TouchController::readRegister(uint8_t address, uint8_t reg, uint8_t& value) {
-    Wire.beginTransmission(address);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) {
-        delayMicroseconds(50);
-        return false;
-    }
-    
-    delayMicroseconds(50);  // Small delay before read
-    
-    if (Wire.requestFrom(address, (uint8_t)1) != 1) {
-        return false;
-    }
-    
-    value = Wire.read();
-    return true;
-}
-
-bool TouchController::writeRegister(uint8_t address, uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(address);
-    Wire.write(reg);
-    Wire.write(value);
-    uint8_t result = Wire.endTransmission();
-    delayMicroseconds(50);  // Small delay after write
-    return result == 0;
-}
-
-bool TouchController::isTouched(uint8_t address) {
-    uint8_t status;
-    
-    // Read sensor input status register
-    if (!readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, status)) {
-        return false;
-    }
-    
-    // Check if CS1 is touched (bit 0)
-    bool touched = (status & CS1_BIT_MASK) != 0;
-    
-    if (touched) {
-        // Clear the interrupt flag by writing 0 to bit 0 of main control register
-        // This is required to reset the touch detection
-        uint8_t mainControl;
-        if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
-            mainControl &= ~0x01;  // Clear INT bit
-            writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
+    for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
+        if (!m_sensors[i].active) {
+            continue;
+        }
+        
+        uint8_t address = SENSOR_I2C_ADDRESSES[i];
+        bool touched = readRawTouch(address);
+        
+        // Check if raw state changed
+        if (touched != m_sensors[i].currentTouched) {
+            m_sensors[i].currentTouched = touched;
+            m_sensors[i].lastChangeTime = now;
         }
     }
+}
+
+void TouchController::processDebounce() {
+    uint32_t now = millis();
     
-    return touched;
-}
-
-void TouchController::sendTouched(char letter) {
-    Serial.print("TOUCHED ");
-    Serial.println(letter);
-}
-
-void TouchController::sendRecorded(char letter) {
-    Serial.print("RECORDED ");
-    Serial.println(letter);
+    for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
+        if (!m_sensors[i].active) {
+            continue;
+        }
+        
+        TouchSensorState& sensor = m_sensors[i];
+        
+        // Check if state has been stable long enough
+        uint32_t elapsed = now - sensor.lastChangeTime;
+        
+        if (elapsed >= DEBOUNCE_MS) {
+            // State is stable - update debounced state
+            if (sensor.currentTouched != sensor.debouncedTouched) {
+                sensor.debouncedTouched = sensor.currentTouched;
+                
+                // Emit event if state changed from last reported
+                if (sensor.debouncedTouched != sensor.lastReportedTouched) {
+                    sensor.lastReportedTouched = sensor.debouncedTouched;
+                    
+                    if (m_eventQueue) {
+                        char letter = indexToLetter(i);
+                        
+                        if (sensor.debouncedTouched) {
+                            // Touch down detected
+                            // Check if we have an expectation for this
+                            if (m_expectDown[i].active) {
+                                // Expected touch - emit TOUCHED_DOWN with command ID
+                                m_eventQueue->queueTouchedDown(letter, m_expectDown[i].commandId);
+                                // Clear the expectation (one-shot)
+                                m_expectDown[i].active = false;
+                                m_expectDown[i].commandId = NO_COMMAND_ID;
+                            } else {
+                                // Spontaneous touch - emit TOUCH_DOWN
+                                m_eventQueue->queueTouchDown(letter);
+                            }
+                        } else {
+                            // Touch up detected
+                            // Check if we have an expectation for this
+                            if (m_expectUp[i].active) {
+                                // Expected release - emit TOUCHED_UP with command ID
+                                m_eventQueue->queueTouchedUp(letter, m_expectUp[i].commandId);
+                                // Clear the expectation (one-shot)
+                                m_expectUp[i].active = false;
+                                m_expectUp[i].commandId = NO_COMMAND_ID;
+                            } else {
+                                // Spontaneous release - emit TOUCH_UP
+                                m_eventQueue->queueTouchUp(letter);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

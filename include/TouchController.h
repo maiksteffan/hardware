@@ -2,12 +2,14 @@
  * @file TouchController.h
  * @brief Touch sensor controller for 25 CAP1188 capacitive touch sensors over I2C
  * 
- * Manages 25 CAP1188 sensors, each with a unique I2C address using only the CS1 channel.
- * Supports EXPECT mode (wait for specific sensor) and RECORD mode (capture first touch).
+ * Protocol v2: Event-driven architecture
+ * - Always polls sensors (not just in EXPECT mode)
+ * - Emits TOUCH_DOWN/TOUCH_UP events on state changes
+ * - Debounces touch inputs for reliable detection
  * 
- * Protocol:
- *   Output: "TOUCHED <letter>\n" when expected sensor is touched
- *           "RECORDED <letter>\n" when any sensor touched in record mode
+ * Events:
+ *   TOUCH_DOWN <letter> - Touch went from inactive -> active (debounced)
+ *   TOUCH_UP <letter>   - Touch went from active -> inactive (debounced)
  */
 
 #ifndef TOUCH_CONTROLLER_H
@@ -15,81 +17,30 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include "Config.h"
 
-
-// Forward declaration for callback
-class SequenceController;
-// ============================================================================
-// Configuration
-// ============================================================================
-
-// Number of touch sensors (A-Y = 25 sensors)
-constexpr uint8_t NUM_TOUCH_SENSORS = 25;
-
-// CAP1188 Register addresses
-constexpr uint8_t CAP1188_REG_SENSOR_INPUT_STATUS = 0x03;  // Read touch status
-constexpr uint8_t CAP1188_REG_SENSITIVITY_CONTROL = 0x01;  // Sensitivity (0-7)
-constexpr uint8_t CAP1188_REG_SENSOR_INPUT_ENABLE = 0x21;  // Enable/disable inputs
-constexpr uint8_t CAP1188_REG_CALIBRATION_ACTIVE = 0x26;   // Trigger recalibration
-constexpr uint8_t CAP1188_REG_MAIN_CONTROL = 0x00;         // Main control register
-
-// CS1 bit mask (only using CS1 channel)
-constexpr uint8_t CS1_BIT_MASK = 0x01;
-
-// Default sensitivity level (0 = most sensitive, 7 = least sensitive)
-constexpr uint8_t DEFAULT_SENSITIVITY = 0;
-
-// Minimum time between touch reads (ms) to prevent excessive I2C traffic
-constexpr uint16_t TOUCH_SCAN_INTERVAL_MS = 20;
+// Forward declaration
+class EventQueue;
 
 // ============================================================================
-// I2C Address Mapping for Sensors A-Y
+// Touch State Per Sensor
 // ============================================================================
 
-/**
- * I2C addresses for each sensor position (A-Y).
- * CAP1188 default address is 0x29, with A0/A1 pins allowing addresses 0x28-0x2B.
- * For 25 sensors, we use addresses 0x28-0x40 (adjust as per your hardware setup).
- * 
- * Modify this array to match your physical wiring!
- */
-constexpr uint8_t SENSOR_I2C_ADDRESSES[NUM_TOUCH_SENSORS] = {
-    0x1F,  // A  (old P)
-    0x1E,  // B  (old O)
-    0x1D,  // C  (old N)
-    0x1C,  // D  (old M)
-    0x3F,  // E  (old L)
-    0x1A,  // F  (old K)
-    0x28,  // G  (old Q)  <-- assumed fix (Q->G)
-    0x29,  // H  (old R)
-    0x2A,  // I  (old S)
-    0x0E,  // J  (old G)
-    0x0F,  // K  (old H)
-    0x18,  // L  (old I)
-    0x19,  // M  (old J)
-    0x3C,  // N  (old W)  <-- assumed
-    0x2F,  // O  (old X)  <-- assumed
-    0x38,  // P  (old Y)  <-- assumed
-    0x0D,  // Q  (old F)
-    0x0C,  // R  (old E)
-    0x0B,  // S  (old D)
-    0x3E,  // T  (old T)
-    0x2C,  // U  (old U)
-    0x3D,  // V  (old V)
-    0x08,  // W  (old A)
-    0x09,  // X  (old B)
-    0x0A   // Y  (old C)
+struct TouchSensorState {
+    bool active;              // Whether sensor responded to init
+    bool currentTouched;      // Current raw touch state
+    bool debouncedTouched;    // Debounced (stable) touch state
+    bool lastReportedTouched; // Last state reported via event
+    uint32_t lastChangeTime;  // When the raw state last changed
 };
 
-
 // ============================================================================
-// Controller Mode
+// Expectation State (for EXPECT_DOWN/EXPECT_UP)
 // ============================================================================
 
-enum class TouchMode : uint8_t {
-    IDLE,       // Normal operation, ignore touches
-    EXPECT,     // Waiting for a specific sensor touch
-    RECORD      // Waiting for any sensor touch (first touch wins)
+struct ExpectState {
+    bool active;              // Expectation is active
+    uint32_t commandId;       // Command ID to include in response
 };
 
 // ============================================================================
@@ -104,80 +55,90 @@ public:
     TouchController();
 
     /**
+     * @brief Set the event queue for emitting touch events
+     * @param eventQueue Pointer to event queue
+     */
+    void setEventQueue(EventQueue* eventQueue);
+
+    /**
      * @brief Initialize all 25 CAP1188 sensors
-     * Enables only CS1 on each sensor and sets default sensitivity.
-     * Call this in setup() after Wire.begin()
-     * @return true if at least one sensor was initialized successfully
+     * @return true if at least one sensor was initialized
      */
     bool begin();
 
     /**
-     * @brief Update touch state (non-blocking)
-     * Scans all sensors for touch input and handles EXPECT/RECORD modes.
-     * Call this every loop iteration.
+     * @brief Tick the touch controller (non-blocking)
+     * Polls sensors, debounces, and emits events
+     * Call this every loop iteration
      */
-    void update();
-
-    /**
-     * @brief Set up EXPECT mode for a specific sensor
-     * When the expected sensor is touched, sends "TOUCHED <letter>"
-     * @param letter Sensor letter (A-Y, case-insensitive)
-     * @return true if valid letter, false otherwise
-     */
-    bool expectSensor(char letter);
-
-    /**
-     * @brief Enable RECORD mode to listen for first touch on any sensor
-     * When any sensor is touched, sends "RECORDED <letter>"
-     */
-    void startRecording();
-
-    /**
-     * @brief Cancel any active EXPECT or RECORD operation
-     */
-    void cancelOperation();
-
-    /**
-     * @brief Check if controller is in IDLE mode
-     * @return true if idle (not expecting or recording)
-     */
-    bool isIdle() const;
-
-    /**
-     * @brief Scan and print all active I2C addresses to Serial
-     * Useful for debugging and verifying hardware connections
-     */
-    void scanAddresses();
-
-    /**
-     * @brief Set sensitivity for a specific sensor
-     * @param sensorIndex Sensor index (0-24, corresponding to A-Y)
-     * @param level Sensitivity level (0 = most sensitive, 7 = least sensitive)
-     * @return true if write succeeded
-     */
-    bool setSensitivity(uint8_t sensorIndex, uint8_t level);
+    void tick();
 
     /**
      * @brief Recalibrate a specific sensor
-     * @param sensorIndex Sensor index (0-24, corresponding to A-Y)
-     * @return true if write succeeded
+     * @param sensorIndex Sensor index (0-24)
+     * @return true if successful
      */
     bool recalibrate(uint8_t sensorIndex);
 
     /**
-     * @brief Recalibrate all 25 sensors
+     * @brief Recalibrate all active sensors
      */
     void recalibrateAll();
 
     /**
-     * @brief Set callback for touch events
-     * @param callback Function pointer to call when touch is detected (receives letter A-Y)
+     * @brief Set expectation for touch down at position
+     * @param sensorIndex Sensor index (0-24)
+     * @param commandId Command ID to include in TOUCHED_DOWN response
      */
-    void setTouchCallback(void (*callback)(char));
+    void setExpectDown(uint8_t sensorIndex, uint32_t commandId);
 
-    // ========================================================================
-    // Static Utility Methods
-    // ========================================================================
+    /**
+     * @brief Set expectation for touch up at position
+     * @param sensorIndex Sensor index (0-24)
+     * @param commandId Command ID to include in TOUCHED_UP response
+     */
+    void setExpectUp(uint8_t sensorIndex, uint32_t commandId);
+
+    /**
+     * @brief Clear expectation for touch down at position
+     * @param sensorIndex Sensor index (0-24)
+     */
+    void clearExpectDown(uint8_t sensorIndex);
+
+    /**
+     * @brief Clear expectation for touch up at position
+     * @param sensorIndex Sensor index (0-24)
+     */
+    void clearExpectUp(uint8_t sensorIndex);
+
+    /**
+     * @brief Build comma-separated list of active sensor letters
+     * @param buffer Output buffer (should be at least 52 chars)
+     * @param bufferSize Size of buffer
+     */
+    void buildActiveSensorList(char* buffer, size_t bufferSize) const;
+
+    /**
+     * @brief Check if a sensor is active (initialized successfully)
+     * @param sensorIndex Sensor index (0-24)
+     * @return true if active
+     */
+    bool isSensorActive(uint8_t sensorIndex) const;
+
+    /**
+     * @brief Get the current debounced touch state of a sensor
+     * @param sensorIndex Sensor index (0-24)
+     * @return true if touched
+     */
+    bool isTouched(uint8_t sensorIndex) const;
+
+    /**
+     * @brief Get number of active sensors
+     * @return Count of successfully initialized sensors
+     */
+    uint8_t getActiveSensorCount() const;
+
+    // === Utility Methods ===
 
     /**
      * @brief Convert sensor letter (A-Y) to index (0-24)
@@ -200,72 +161,71 @@ public:
      */
     static uint8_t addressToIndex(uint8_t address);
 
-    /**
-     * @brief Try to recover a stuck I2C bus
-     * Toggles SCL to release any slaves holding SDA low
-     */
-    void recoverI2CBus();
-
 private:
-    // Current operating mode
-    TouchMode m_mode;
+    // Event queue for emitting events
+    EventQueue* m_eventQueue;
 
-    // Expected sensor index when in EXPECT mode
-    uint8_t m_expectedSensorIndex;
+    // Per-sensor state
+    TouchSensorState m_sensors[NUM_TOUCH_SENSORS];
 
-    // Track which sensors were successfully initialized
-    bool m_sensorActive[NUM_TOUCH_SENSORS];
+    // Expectation tracking for EXPECT_DOWN/EXPECT_UP commands
+    ExpectState m_expectDown[NUM_TOUCH_SENSORS];
+    ExpectState m_expectUp[NUM_TOUCH_SENSORS];
 
-    // Timestamp of last sensor scan
-    uint32_t m_lastScanTime;
+    // Timestamp of last sensor poll
+    uint32_t m_lastPollTime;
 
-    // Callback for touch events
-    void (*m_touchCallback)(char);
+    // Number of successfully initialized sensors
+    uint8_t m_activeSensorCount;
+
+    // === I2C Methods ===
 
     /**
      * @brief Initialize a single CAP1188 sensor
-     * @param address I2C address of the sensor
-     * @return true if initialization succeeded
+     * @param address I2C address
+     * @return true if successful
      */
     bool initSensor(uint8_t address);
 
     /**
      * @brief Read a register from a CAP1188 sensor
-     * @param address I2C address of the sensor
+     * @param address I2C address
      * @param reg Register address
      * @param value Output value
-     * @return true if read succeeded
+     * @return true if successful
      */
     bool readRegister(uint8_t address, uint8_t reg, uint8_t& value);
 
     /**
      * @brief Write a register to a CAP1188 sensor
-     * @param address I2C address of the sensor
+     * @param address I2C address
      * @param reg Register address
      * @param value Value to write
-     * @return true if write succeeded
+     * @return true if successful
      */
     bool writeRegister(uint8_t address, uint8_t reg, uint8_t value);
 
     /**
-     * @brief Check if CS1 is touched on a sensor
-     * Also clears the interrupt flag after reading.
-     * @param address I2C address of the sensor
+     * @brief Read raw touch state from a sensor
+     * @param address I2C address
      * @return true if CS1 is touched
      */
-    bool isTouched(uint8_t address);
+    bool readRawTouch(uint8_t address);
 
     /**
-     * @brief Send TOUCHED response
-     * @param letter Sensor letter (A-Y)
+     * @brief Try to recover a stuck I2C bus
      */
-    void sendTouched(char letter);
+    void recoverI2CBus();
 
     /**
-     * @brief Send RECORDED response
-     * @param letter Sensor letter (A-Y)
+     * @brief Poll all sensors and update raw states
      */
-    void sendRecorded(char letter);
+    void pollSensors();
+
+    /**
+     * @brief Process debouncing and emit events
+     */
+    void processDebounce();
 };
 
 #endif // TOUCH_CONTROLLER_H

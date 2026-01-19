@@ -1,96 +1,105 @@
 /**
  * =============================================================================
- * Dual LED Strip Controller for Arduino UNO R4 WiFi
+ * LED & Touch Controller Firmware v2.0
+ * Arduino UNO R4 WiFi - Event-Driven Architecture
  * =============================================================================
  * 
  * OVERVIEW
  * --------
- * This project controls two addressable LED strips via serial commands.
- * 25 logical positions (A-Y) are mapped to physical LEDs on either strip.
+ * This firmware implements a "dumb" hardware executor and event source.
+ * The Arduino handles:
+ *   - LED control (SHOW/HIDE/SUCCESS animations)
+ *   - Touch sensor polling with debouncing
+ *   - Serial command processing with request-response correlation
  * 
- * HARDWARE SETUP
- * --------------
- * - Board:       Arduino UNO R4 WiFi
- * - Framework:   Arduino (PlatformIO)
- * - Strip 1:     Data pin D5
- * - Strip 2:     Data pin D10
- * - LED Type:    WS2812B (addressable RGB LEDs)
+ * All game logic and sequence control resides on the Raspberry Pi.
  * 
- * LIBRARY CHOICE
- * --------------
- * This project uses Adafruit NeoPixel instead of FastLED because:
- * - Better compatibility with Arduino UNO R4 WiFi (Renesas RA platform)
- * - FastLED has known compilation issues with the Renesas RA MCU
- * - Adafruit NeoPixel is actively maintained for this platform
+ * PROTOCOL VERSION 2
+ * ------------------
+ * - ASCII line-based protocol, terminated by '\n'
+ * - Optional command IDs (#<number>) for request-response correlation
+ * - Non-blocking: TOUCH events can interleave with command responses
  * 
- * SERIAL PROTOCOL
+ * Commands (Pi -> Arduino):
+ *   SHOW <pos> [#id]         Turn on LED at position (blue)
+ *   HIDE <pos> [#id]         Turn off LED at position
+ *   SUCCESS <pos> [#id]      Play success animation (green, non-blocking)
+ *   EXPECT_DOWN <pos> [#id]  Wait for touch, emit TOUCHED_DOWN
+ *   EXPECT_UP <pos> [#id]    Wait for release, emit TOUCHED_UP
+ *   RECALIBRATE <pos> [#id]  Recalibrate touch sensor
+ *   RECALIBRATE_ALL [#id]    Recalibrate all sensors
+ *   SEQUENCE_COMPLETED [#id] Play celebration animation
+ *   SCAN [#id]               Scan I2C bus for devices
+ *   INFO [#id]               Return firmware info
+ *   PING [#id]               Health check
+ * 
+ * Responses (Arduino -> Pi):
+ *   ACK <action> [<pos>] [#id]   Command accepted
+ *   DONE <action> [<pos>] [#id]  Long-running command completed
+ *   ERR <reason> [#id]           Command failed
+ *   TOUCH_DOWN <pos>             Touch sensor pressed (spontaneous)
+ *   TOUCH_UP <pos>               Touch sensor released (spontaneous)
+ *   TOUCHED_DOWN <pos> [#id]     Expected touch detected
+ *   TOUCHED_UP <pos> [#id]       Expected release detected
+ *   SCANNED[A,B,C,...] [#id]     Active sensors list
+ *   RECALIBRATED <pos|ALL> [#id] Recalibration complete
+ *   INFO version=... [#id]       Firmware information
+ * 
+ * HARDWARE
+ * --------
+ *   Board:      Arduino UNO R4 WiFi
+ *   LED Strip 1: D5 (190 LEDs)
+ *   LED Strip 2: D10 (190 LEDs)
+ *   Touch:      25x CAP1188 sensors via I2C
+ *   Baud:       115200
+ * 
+ * MOCK PI TESTING
  * ---------------
- * Baud Rate: 115200
- * Line ending: '\n' (newline)
- * 
- * Commands (case-insensitive):
- *   SHOW <pos>     - Light single LED at position in BLUE
- *   HIDE <pos>     - Turn off LED(s) at position (including expanded region)
- *   SUCCESS <pos>  - Play green expansion animation (up to 5 LEDs each side)
- * 
- * Position: A-Y (25 positions, case-insensitive)
- * 
- * Responses:
- *   ACK <ACTION> <POSITION>   - Command executed successfully
- *   ERR <reason>              - Command failed
- *     Reasons: unknown_action, unknown_position, bad_format, 
- *              line_too_long, command_failed
- * 
- * Examples:
- *   Input:  "SHOW A\n"       -> Output: "ACK SHOW A\n"
- *   Input:  "success b\n"    -> Output: "ACK SUCCESS B\n"
- *   Input:  "HIDE C\n"       -> Output: "ACK HIDE C\n"
- *   Input:  "INVALID X\n"    -> Output: "ERR unknown_action\n"
- *   Input:  "SHOW Z\n"       -> Output: "ERR unknown_position\n"
- * 
- * LED POSITION MAPPINGS
- * ---------------------
- * Positions A-Y are mapped to specific LEDs on Strip 1 or Strip 2.
- * Edit the LED_MAPPINGS array in LedController.cpp to match your physical layout.
- * 
- * Default mapping (modify as needed):
- *   A-L: Strip 1, indices 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55
- *   M-Y: Strip 2, indices 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 58
- * 
- * CONFIGURATION
- * -------------
- * - LED_BRIGHTNESS:          Overall brightness (0-255), default 128
- * - COLOR_SHOW_*:            Color for SHOW command (default: Blue)
- * - COLOR_SUCCESS_*:         Color for SUCCESS animation (default: Green)
- * - SUCCESS_EXPANSION_RADIUS: Max expansion (default: 5 LEDs each side)
- * - ANIMATION_STEP_MS:       Animation speed (default: 80ms per step)
- * 
- * See platformio.ini for strip length configuration (NUM_LEDS_STRIP1/2).
- * 
- * ARCHITECTURE
- * ------------
- * - LedController:    Manages LED buffers, rendering, animations
- * - CommandController: Parses serial input, dispatches commands, sends responses
- * - main.cpp:         Minimal setup/loop, wires components together
- * 
- * BUILD & UPLOAD
- * --------------
- *   pio run              # Build
- *   pio run -t upload    # Build and upload
- *   pio device monitor   # Open serial monitor
+ *   Define ENABLE_MOCK_PI to enable on-device testing without a real Pi.
+ *   Select program with MOCK_PI_PROGRAM (1, 2, or 3).
  * 
  * =============================================================================
  */
 
 #include <Arduino.h>
+#include "Config.h"
 #include "LedController.h"
-#include "CommandController.h"
 #include "TouchController.h"
-#include "SequenceController.h"
+#include "CommandController.h"
+#include "EventQueue.h"
+
+// ============================================================================
+// Mock Pi Configuration
+// ============================================================================
+// Uncomment to enable Mock Pi testing (simulates Pi commands on-device)
+#define ENABLE_MOCK_PI 1
+
+// Select which program to run (1, 2, 3, or 4)
+// 1 = Simple sequence (positions: ABCDE)
+// 2 = Simultaneous sequence (spec: "A,B,(C+D),(E+F)")  
+// 3 = Record then playback mode
+// 4 = Two-hand overlapping sequence (positions: ABCDEFG)
+#define MOCK_PI_PROGRAM 4
+
+// Sequence for Program 1 (simple sequential)
+#define MOCK_PI_SIMPLE_SEQUENCE "ABCDE"
+
+// Specification for Program 2 (simultaneous steps)
+#define MOCK_PI_SIMULTANEOUS_SPEC "A,B,(C+D),(E+F)"
+
+// Sequence for Program 4 (two-hand overlapping)
+#define MOCK_PI_TWO_HAND_SEQUENCE "ABCDEFG"
+
+#ifdef ENABLE_MOCK_PI
+#include "MockPiPrograms.h"
+#endif
 
 // ============================================================================
 // Global Instances
 // ============================================================================
+
+// Event queue for outgoing serial messages
+EventQueue eventQueue;
 
 // LED controller manages both strips and animations
 LedController ledController;
@@ -98,19 +107,13 @@ LedController ledController;
 // Touch controller manages CAP1188 touch sensors
 TouchController touchController;
 
-// Sequence controller manages LED/touch sequences
-SequenceController sequenceController(ledController, touchController);
+// Command controller handles serial protocol
+CommandController commandController(ledController, &touchController, eventQueue);
 
-// Command controller handles serial protocol (with touch and sequence controller references)
-CommandController commandController(ledController, &touchController, &sequenceController);
-
-// ============================================================================
-// Touch Callback - bridges TouchController to SequenceController
-// ============================================================================
-
-void onTouchDetected(char letter) {
-    sequenceController.onTouched(letter);
-}
+#ifdef ENABLE_MOCK_PI
+// Mock Pi for on-device testing
+MockPiPrograms mockPi;
+#endif
 
 // ============================================================================
 // Arduino Setup
@@ -118,35 +121,58 @@ void onTouchDetected(char letter) {
 
 void setup() {
     // Initialize serial communication
-    Serial.begin(115200);
+    Serial.begin(SERIAL_BAUD_RATE);
     
-    // Wait for serial port to connect (needed for native USB)
-    // Timeout after 3 seconds to not block if no USB connected
+    // Wait for serial port to connect (timeout after 3 seconds)
     uint32_t startTime = millis();
     while (!Serial && (millis() - startTime < 3000)) {
         // Wait
     }
     
-    // Initialize LED controller (sets up FastLED)
+    // Initialize event queue
+    eventQueue.begin();
+    
+    // Initialize LED controller
     ledController.begin();
     
-    // Initialize touch controller (sets up I2C and CAP1188 sensors)
+    // Initialize touch controller
+    touchController.setEventQueue(&eventQueue);
     touchController.begin();
-    
-    // Register touch callback to notify sequence controller
-    touchController.setTouchCallback(onTouchDetected);
-    
-    // Initialize sequence controller
-    sequenceController.begin();
     
     // Initialize command controller
     commandController.begin();
     
-    // Ready message
-    Serial.println("LED & Touch Controller Ready");
-    Serial.println("Commands: SHOW <A-Y>, HIDE <A-Y>, SUCCESS <A-Y>");
-    Serial.println("          EXPECT <A-Y>, RECORD, SCAN, RECALIBRATE <A-Y>");
-    Serial.println("          SEQUENCE(A,B,C,...)");
+    // Signal ready - send INFO automatically
+    eventQueue.queueInfo(NO_COMMAND_ID);
+    eventQueue.flush(1);
+    
+#ifdef ENABLE_MOCK_PI
+    // Initialize Mock Pi
+    mockPi.begin();
+    mockPi.setTouchController(&touchController);
+    mockPi.setCommandController(&commandController);
+    mockPi.setVerbose(true);
+    
+    // Small delay to let serial settle
+    delay(500);
+    
+    // Start the selected program
+    #if MOCK_PI_PROGRAM == 1
+        Serial.println("MockPi: Starting Program 1 - Simple Sequence");
+        mockPi.startSequenceSimple(MOCK_PI_SIMPLE_SEQUENCE);
+    #elif MOCK_PI_PROGRAM == 2
+        Serial.println("MockPi: Starting Program 2 - Simultaneous Sequence");
+        mockPi.startSequenceSimultaneous(MOCK_PI_SIMULTANEOUS_SPEC);
+    #elif MOCK_PI_PROGRAM == 3
+        Serial.println("MockPi: Starting Program 3 - Record & Playback");
+        mockPi.startRecordPlayback();
+    #elif MOCK_PI_PROGRAM == 4
+        Serial.println("MockPi: Starting Program 4 - Two-Hand Sequence");
+        mockPi.startTwoHandSequence(MOCK_PI_TWO_HAND_SEQUENCE);
+    #else
+        Serial.println("MockPi: No program selected (set MOCK_PI_PROGRAM to 1, 2, 3, or 4)");
+    #endif
+#endif
 }
 
 // ============================================================================
@@ -154,18 +180,26 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    // Get current time once per loop iteration
-    uint32_t now = millis();
+    // 1. Poll serial for incoming data (non-blocking)
+    commandController.pollSerial();
     
-    // Process serial commands (non-blocking)
-    commandController.update();
+    // 2. Process any complete command lines
+    commandController.processCompletedLines();
     
-    // Update touch sensor state (non-blocking)
-    touchController.update();
+    // 3. Tick command executor for long-running commands
+    commandController.tick();
     
-    // Update sequence controller state (non-blocking)
-    sequenceController.update();
+    // 4. Tick touch controller (poll sensors, debounce, emit events)
+    touchController.tick();
     
-    // Update LED animations (non-blocking)
-    ledController.update(now);
+    // 5. Tick LED controller (update animations)
+    ledController.tick();
+    
+    // 6. Flush pending events to serial
+    eventQueue.flush(3);  // Send up to 3 events per loop
+    
+#ifdef ENABLE_MOCK_PI
+    // 7. Update Mock Pi state machine
+    mockPi.update();
+#endif
 }

@@ -1,23 +1,32 @@
 /**
  * @file CommandController.cpp
- * @brief Implementation of serial command parser for LED strip control
+ * @brief Implementation of serial command parser and executor
+ * 
+ * Protocol v2 implementation with:
+ * - Non-blocking serial read via ring buffer
+ * - Command ID support for request-response correlation
+ * - Long-running command support (SCAN, SUCCESS animation)
  */
 
 #include "CommandController.h"
 #include "LedController.h"
 #include "TouchController.h"
-#include "SequenceController.h"
+#include "EventQueue.h"
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
-CommandController::CommandController(LedController& ledController, TouchController* touchController,
-                                     SequenceController* sequenceController)
+CommandController::CommandController(LedController& ledController, 
+                                     TouchController* touchController,
+                                     EventQueue& eventQueue)
     : m_ledController(ledController)
     , m_touchController(touchController)
-    , m_sequenceController(sequenceController)
-    , m_bufferIndex(0)
+    , m_eventQueue(eventQueue)
+    , m_rxHead(0)
+    , m_rxTail(0)
+    , m_lineIndex(0)
+    , m_lineOverflow(false)
 {
 }
 
@@ -26,85 +35,196 @@ CommandController::CommandController(LedController& ledController, TouchControll
 // ============================================================================
 
 void CommandController::begin() {
-    // Clear buffer
-    m_bufferIndex = 0;
-    memset(m_buffer, 0, sizeof(m_buffer));
-    m_lastCharTime = 0;
+    // Clear ring buffer
+    m_rxHead = 0;
+    m_rxTail = 0;
+    
+    // Clear line buffer
+    m_lineIndex = 0;
+    m_lineOverflow = false;
+    memset(m_lineBuffer, 0, sizeof(m_lineBuffer));
+    
+    // Clear command queue
+    for (uint8_t i = 0; i < COMMAND_QUEUE_SIZE; i++) {
+        m_commandQueue[i].active = false;
+    }
 }
 
-void CommandController::update() {
-    // Process all available serial data (non-blocking, handles burst input)
+void CommandController::pollSerial() {
+    // Read all available bytes into ring buffer (non-blocking)
     while (Serial.available() > 0) {
         char c = Serial.read();
-        m_lastCharTime = millis();  // Track when we received data
         
-        // Debug: echo received character
-        Serial.print("[RX:");
-        Serial.print((int)c);
-        Serial.print("]");
+        // Calculate next head position
+        uint8_t nextHead = (m_rxHead + 1) % sizeof(m_rxBuffer);
         
-        // Handle line termination
-        if (c == '\n' || c == '\r') {
-            if (m_bufferIndex > 0) {
-                // Null-terminate and process
-                m_buffer[m_bufferIndex] = '\0';
-                processLine(m_buffer);
-                
-                // Reset buffer
-                m_bufferIndex = 0;
-                memset(m_buffer, 0, sizeof(m_buffer));
-            }
+        // Check for buffer full (leave one slot empty)
+        if (nextHead != m_rxTail) {
+            m_rxBuffer[m_rxHead] = c;
+            m_rxHead = nextHead;
+        }
+        // If buffer full, silently drop characters
+    }
+}
+
+void CommandController::processCompletedLines() {
+    // Try to extract and process complete lines
+    while (extractLine()) {
+        // Check for overflow condition
+        if (m_lineOverflow) {
+            m_eventQueue.queueError("line_too_long", NO_COMMAND_ID);
+            m_lineOverflow = false;
             continue;
         }
         
-        // Add character to buffer if there's room
-        if (m_bufferIndex < MAX_COMMAND_LENGTH - 1) {
-            m_buffer[m_bufferIndex++] = c;
-        } else {
-            // Buffer overflow - discard and report error
-            sendError("line_too_long");
-            m_bufferIndex = 0;
-            memset(m_buffer, 0, sizeof(m_buffer));
-            
-            // Discard rest of line
-            while (Serial.available() > 0) {
-                c = Serial.read();
-                if (c == '\n' || c == '\r') {
-                    break;
-                }
-            }
+        // Skip empty lines
+        const char* line = skipWhitespace(m_lineBuffer);
+        if (*line == '\0') {
+            continue;
         }
+        
+        // Parse the line
+        ParsedCommand cmd;
+        if (!parseLine(line, cmd)) {
+            // Error already queued by parseLine
+            continue;
+        }
+        
+        // Execute the command
+        executeCommand(cmd);
     }
-    
-    // Timeout-based processing: if we have data in buffer and no new data for a while,
-    // process the buffer even without a newline (handles senders that don't send \n)
-    if (m_bufferIndex > 0 && m_lastCharTime > 0) {
-        uint32_t elapsed = millis() - m_lastCharTime;
-        if (elapsed >= COMMAND_TIMEOUT_MS) {
-            // Null-terminate and process
-            m_buffer[m_bufferIndex] = '\0';
-            Serial.print("[TIMEOUT]");  // Debug
-            processLine(m_buffer);
-            
-            // Reset buffer
-            m_bufferIndex = 0;
-            memset(m_buffer, 0, sizeof(m_buffer));
-            m_lastCharTime = 0;
+}
+
+void CommandController::tick() {
+    // Tick all active long-running commands
+    for (uint8_t i = 0; i < COMMAND_QUEUE_SIZE; i++) {
+        if (m_commandQueue[i].active) {
+            tickCommand(m_commandQueue[i]);
         }
     }
 }
 
+bool CommandController::isQueueFull() const {
+    for (uint8_t i = 0; i < COMMAND_QUEUE_SIZE; i++) {
+        if (!m_commandQueue[i].active) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void CommandController::injectCommand(const char* line) {
+    if (!line || *line == '\0') {
+        return;
+    }
+    
+    // Skip any prefix like "PI> "
+    if (strncmp(line, "PI> ", 4) == 0) {
+        line += 4;
+    }
+    
+    // Parse the line
+    ParsedCommand cmd;
+    if (!parseLine(line, cmd)) {
+        return; // Error already queued
+    }
+    
+    // Execute the command
+    executeCommand(cmd);
+}
+
 // ============================================================================
-// Private Methods
+// Serial/Parsing Methods
 // ============================================================================
 
-void CommandController::processLine(const char* line) {
-    // Skip leading whitespace
+bool CommandController::extractLine() {
+    m_lineIndex = 0;
+    m_lineOverflow = false;
+    
+    // Check if theres data in ring buffer
+    if (m_rxHead == m_rxTail) {
+        return false;  // Buffer empty
+    }
+    
+    // Scan for newline
+    uint8_t pos = m_rxTail;
+    bool foundNewline = false;
+    
+    while (pos != m_rxHead) {
+        char c = m_rxBuffer[pos];
+        
+        if (c == '\n' || c == '\r') {
+            foundNewline = true;
+            break;
+        }
+        
+        pos = (pos + 1) % sizeof(m_rxBuffer);
+    }
+    
+    if (!foundNewline) {
+        // Check if we've accumulated too much without newline
+        uint8_t pending = (m_rxHead >= m_rxTail) 
+            ? (m_rxHead - m_rxTail)
+            : (sizeof(m_rxBuffer) - m_rxTail + m_rxHead);
+            
+        if (pending >= MAX_LINE_LEN) {
+            // Discard everything up to MAX_LINE_LEN
+            m_lineOverflow = true;
+            m_rxTail = (m_rxTail + MAX_LINE_LEN) % sizeof(m_rxBuffer);
+            return true;  // Signal to caller that we have an overflow
+        }
+        
+        return false;  // No complete line yet
+    }
+    
+    // Extract characters up to newline
+    while (m_rxTail != m_rxHead) {
+        char c = m_rxBuffer[m_rxTail];
+        m_rxTail = (m_rxTail + 1) % sizeof(m_rxBuffer);
+        
+        // Stop at newline
+        if (c == '\n' || c == '\r') {
+            // Skip any additional CR/LF
+            while (m_rxTail != m_rxHead) {
+                char next = m_rxBuffer[m_rxTail];
+                if (next != '\n' && next != '\r') {
+                    break;
+                }
+                m_rxTail = (m_rxTail + 1) % sizeof(m_rxBuffer);
+            }
+            break;
+        }
+        
+        // Add to line buffer if room
+        if (m_lineIndex < MAX_LINE_LEN - 1) {
+            m_lineBuffer[m_lineIndex++] = c;
+        } else {
+            m_lineOverflow = true;
+        }
+    }
+    
+    // Null-terminate
+    m_lineBuffer[m_lineIndex] = '\0';
+    
+    return true;
+}
+
+bool CommandController::parseLine(const char* line, ParsedCommand& cmd) {
+    // Initialize command
+    cmd.action = CommandAction::INVALID;
+    cmd.hasPosition = false;
+    cmd.position = 0;
+    cmd.positionIndex = 255;
+    cmd.hasId = false;
+    cmd.id = NO_COMMAND_ID;
+    cmd.valid = false;
+    
     const char* ptr = skipWhitespace(line);
     
-    // Empty line?
-    if (*ptr == '\0') {
-        return;  // Silently ignore empty lines
+    // Check for and strip "PI> " prefix (commands from Pi/MockPi)
+    if (strncmp(ptr, "PI>", 3) == 0) {
+        ptr += 3;
+        ptr = skipWhitespace(ptr);
     }
     
     // Find action token
@@ -113,217 +233,127 @@ void CommandController::processLine(const char* line) {
     size_t actionLen = actionEnd - actionStart;
     
     if (actionLen == 0) {
-        sendError("bad_format");
-        return;
+        m_eventQueue.queueError("bad_format", NO_COMMAND_ID);
+        return false;
     }
     
     // Parse action
-    // Create temporary buffer for action (stack allocated, no dynamic memory)
-    char actionBuf[16];
-    if (actionLen >= sizeof(actionBuf)) {
-        sendError("unknown_action");
-        return;
-    }
-    memcpy(actionBuf, actionStart, actionLen);
-    actionBuf[actionLen] = '\0';
-    
-    CommandAction action = parseAction(actionBuf);
-    if (action == CommandAction::INVALID) {
-        sendError("unknown_action");
-        return;
+    cmd.action = parseAction(actionStart, actionLen);
+    if (cmd.action == CommandAction::INVALID) {
+        m_eventQueue.queueError("unknown_action", NO_COMMAND_ID);
+        return false;
     }
     
-    // Handle SEQUENCE command: SEQUENCE(A,B,C,D)
-    if (action == CommandAction::SEQUENCE) {
-        // Find opening parenthesis
-        ptr = actionEnd;
-        while (*ptr == ' ' || *ptr == '\t') ptr++;
-        
-        if (*ptr != '(') {
-            sendError("bad_format");
-            return;
-        }
-        ptr++;  // Skip '('
-        
-        // Find closing parenthesis
-        const char* seqStart = ptr;
-        while (*ptr != '\0' && *ptr != ')') ptr++;
-        
-        if (*ptr != ')') {
-            sendError("bad_format");
-            return;
-        }
-        
-        // Extract sequence string
-        size_t seqLen = ptr - seqStart;
-        char seqBuf[64];
-        if (seqLen >= sizeof(seqBuf)) {
-            sendError("sequence_too_long");
-            return;
-        }
-        memcpy(seqBuf, seqStart, seqLen);
-        seqBuf[seqLen] = '\0';
-        
-        // Start the sequence
-        if (m_sequenceController) {
-            if (m_sequenceController->startSequence(seqBuf)) {
-                Serial.println("ACK SEQUENCE");
-            }
-            // Error messages are printed by SequenceController
-        } else {
-            sendError("no_sequence_controller");
-        }
-        return;
-    }
-    
-    // Handle commands that don't require a position argument
-    if (action == CommandAction::RECORD || action == CommandAction::SCAN) {
-        // Skip whitespace after action
-        ptr = skipWhitespace(actionEnd);
-        
-        // Check for trailing garbage (ignoring whitespace)
-        if (*ptr != '\0') {
-            sendError("bad_format");
-            return;
-        }
-        
-        bool success = false;
-        
-        if (action == CommandAction::RECORD) {
-            if (m_touchController) {
-                m_touchController->startRecording();
-                success = true;
-            } else {
-                sendError("no_touch_controller");
-                return;
-            }
-        } else if (action == CommandAction::SCAN) {
-            if (m_touchController) {
-                m_touchController->scanAddresses();
-                success = true;
-            } else {
-                sendError("no_touch_controller");
-                return;
-            }
-        }
-        
-        if (success) {
-            Serial.print("ACK ");
-            Serial.println(actionToString(action));
-        } else {
-            sendError("command_failed");
-        }
-        return;
-    }
-    
-    // Skip whitespace to position
+    // Move past action
     ptr = skipWhitespace(actionEnd);
     
-    if (*ptr == '\0') {
-        sendError("bad_format");
-        return;
-    }
+    // Check if action requires position
+    bool needsPos = actionRequiresPosition(cmd.action);
     
-    // Find position token
-    const char* posStart = ptr;
-    const char* posEnd = findTokenEnd(ptr);
-    size_t posLen = posEnd - posStart;
-    
-    // Position should be exactly 1 character (A-Y)
-    if (posLen != 1) {
-        sendError("unknown_position");
-        return;
-    }
-    
-    char posChar = *posStart;
-    uint8_t position = LedController::charToPosition(posChar);
-    
-    if (position == 255) {
-        sendError("unknown_position");
-        return;
-    }
-    
-    // Check for trailing garbage (ignoring whitespace)
-    ptr = skipWhitespace(posEnd);
-    if (*ptr != '\0') {
-        sendError("bad_format");
-        return;
-    }
-    
-    // Execute command
-    bool success = false;
-    
-    switch (action) {
-        case CommandAction::SHOW:
-            success = m_ledController.show(position);
-            break;
+    // Parse remaining tokens (position and/or #id)
+    while (*ptr != '\0') {
+        // Check for command ID token
+        if (*ptr == '#') {
+            ptr++;  // Skip #
             
-        case CommandAction::HIDE:
-            success = m_ledController.hide(position);
-            break;
+            // Parse number
+            uint32_t id = 0;
+            bool hasDigits = false;
             
-        case CommandAction::SUCCESS:
-            success = m_ledController.success(position);
-            break;
-            
-        case CommandAction::EXPECT:
-            if (m_touchController) {
-                success = m_touchController->expectSensor(posChar);
-            } else {
-                sendError("no_touch_controller");
-                return;
+            while (*ptr >= '0' && *ptr <= '9') {
+                id = id * 10 + (*ptr - '0');
+                ptr++;
+                hasDigits = true;
             }
-            break;
             
-        case CommandAction::RECALIBRATE:
-            if (m_touchController) {
-                success = m_touchController->recalibrate(position);
-            } else {
-                sendError("no_touch_controller");
-                return;
+            if (!hasDigits) {
+                m_eventQueue.queueError("bad_format", NO_COMMAND_ID);
+                return false;
             }
-            break;
             
-        default:
-            sendError("unknown_action");
-            return;
+            cmd.hasId = true;
+            cmd.id = id;
+            
+            ptr = skipWhitespace(ptr);
+            continue;
+        }
+        
+        // Must be position token
+        const char* tokenStart = ptr;
+        const char* tokenEnd = findTokenEnd(ptr);
+        size_t tokenLen = tokenEnd - tokenStart;
+        
+        if (tokenLen == 1) {
+            // Single character - could be position
+            char c = *tokenStart;
+            uint8_t idx = charToIndex(c);
+            
+            if (idx != 255) {
+                cmd.hasPosition = true;
+                cmd.position = (c >= 'a' && c <= 'z') ? (c - 32) : c;  // Uppercase
+                cmd.positionIndex = idx;
+            } else {
+                m_eventQueue.queueError("unknown_position", cmd.hasId ? cmd.id : NO_COMMAND_ID);
+                return false;
+            }
+        } else if (tokenLen > 1) {
+            // Multi-character token that's not a command ID - error
+            m_eventQueue.queueError("bad_format", cmd.hasId ? cmd.id : NO_COMMAND_ID);
+            return false;
+        }
+        
+        ptr = skipWhitespace(tokenEnd);
     }
     
-    if (success) {
-        // Convert position back to uppercase for ACK
-        char posUpper = LedController::positionToChar(position);
-        sendAck(action, posUpper);
-    } else {
-        sendError("command_failed");
+    // Validate that position is present if required
+    if (needsPos && !cmd.hasPosition) {
+        m_eventQueue.queueError("bad_format", cmd.hasId ? cmd.id : NO_COMMAND_ID);
+        return false;
     }
+    
+    cmd.valid = true;
+    return true;
 }
 
-CommandAction CommandController::parseAction(const char* str) {
-    size_t len = strlen(str);
-    
-    if (len == 4 && strcasecmp_n(str, "SHOW", 4)) {
+CommandAction CommandController::parseAction(const char* str, size_t len) {
+    if (len == 4 && strcasecmpN(str, "SHOW", 4)) {
         return CommandAction::SHOW;
     }
-    if (len == 4 && strcasecmp_n(str, "HIDE", 4)) {
+    if (len == 4 && strcasecmpN(str, "HIDE", 4)) {
         return CommandAction::HIDE;
     }
-    if (len == 7 && strcasecmp_n(str, "SUCCESS", 7)) {
+    if (len == 7 && strcasecmpN(str, "SUCCESS", 7)) {
         return CommandAction::SUCCESS;
     }
-    if (len == 6 && strcasecmp_n(str, "EXPECT", 6)) {
-        return CommandAction::EXPECT;
+    if (len == 5 && strcasecmpN(str, "BLINK", 5)) {
+        return CommandAction::BLINK;
     }
-    if (len == 6 && strcasecmp_n(str, "RECORD", 6)) {
-        return CommandAction::RECORD;
+    if (len == 10 && strcasecmpN(str, "STOP_BLINK", 10)) {
+        return CommandAction::STOP_BLINK;
     }
-    if (len == 4 && strcasecmp_n(str, "SCAN", 4)) {
-        return CommandAction::SCAN;
+    if (len == 11 && strcasecmpN(str, "EXPECT_DOWN", 11)) {
+        return CommandAction::EXPECT_DOWN;
     }
-    if (len == 11 && strcasecmp_n(str, "RECALIBRATE", 11)) {
+    if (len == 9 && strcasecmpN(str, "EXPECT_UP", 9)) {
+        return CommandAction::EXPECT_UP;
+    }
+    if (len == 11 && strcasecmpN(str, "RECALIBRATE", 11)) {
         return CommandAction::RECALIBRATE;
     }
-    if (len == 8 && strcasecmp_n(str, "SEQUENCE", 8)) {
-        return CommandAction::SEQUENCE;
+    if (len == 15 && strcasecmpN(str, "RECALIBRATE_ALL", 15)) {
+        return CommandAction::RECALIBRATE_ALL;
+    }
+    if (len == 4 && strcasecmpN(str, "SCAN", 4)) {
+        return CommandAction::SCAN;
+    }
+    if (len == 18 && strcasecmpN(str, "SEQUENCE_COMPLETED", 18)) {
+        return CommandAction::SEQUENCE_COMPLETED;
+    }
+    if (len == 4 && strcasecmpN(str, "INFO", 4)) {
+        return CommandAction::INFO;
+    }
+    if (len == 4 && strcasecmpN(str, "PING", 4)) {
+        return CommandAction::PING;
     }
     
     return CommandAction::INVALID;
@@ -331,56 +361,274 @@ CommandAction CommandController::parseAction(const char* str) {
 
 const char* CommandController::actionToString(CommandAction action) {
     switch (action) {
-        case CommandAction::SHOW:        return "SHOW";
-        case CommandAction::HIDE:        return "HIDE";
-        case CommandAction::SUCCESS:     return "SUCCESS";
-        case CommandAction::EXPECT:      return "EXPECT";
-        case CommandAction::RECORD:      return "RECORD";
-        case CommandAction::SCAN:        return "SCAN";
-        case CommandAction::RECALIBRATE: return "RECALIBRATE";
-        case CommandAction::SEQUENCE:    return "SEQUENCE";
-        default:                         return "UNKNOWN";
+        case CommandAction::SHOW:               return "SHOW";
+        case CommandAction::HIDE:               return "HIDE";
+        case CommandAction::SUCCESS:            return "SUCCESS";
+        case CommandAction::BLINK:              return "BLINK";
+        case CommandAction::STOP_BLINK:         return "STOP_BLINK";
+        case CommandAction::EXPECT_DOWN:        return "EXPECT_DOWN";
+        case CommandAction::EXPECT_UP:          return "EXPECT_UP";
+        case CommandAction::RECALIBRATE:        return "RECALIBRATE";
+        case CommandAction::RECALIBRATE_ALL:    return "RECALIBRATE_ALL";
+        case CommandAction::SCAN:               return "SCAN";
+        case CommandAction::SEQUENCE_COMPLETED: return "SEQUENCE_COMPLETED";
+        case CommandAction::INFO:               return "INFO";
+        case CommandAction::PING:               return "PING";
+        default:                                return "UNKNOWN";
     }
 }
 
-void CommandController::sendAck(CommandAction action, char position) {
-    Serial.print("ACK ");
-    Serial.print(actionToString(action));
-    Serial.print(" ");
-    Serial.println(position);
-}
-
-void CommandController::sendError(const char* reason) {
-    Serial.print("ERR ");
-    Serial.println(reason);
-}
-
-const char* CommandController::skipWhitespace(const char* str) {
-    while (*str == ' ' || *str == '\t') {
-        str++;
-    }
-    return str;
-}
-
-const char* CommandController::findTokenEnd(const char* str) {
-    while (*str != '\0' && *str != ' ' && *str != '\t' && *str != '\n' && *str != '\r' && *str != '(') {
-        str++;
-    }
-    return str;
-}
-
-bool CommandController::strcasecmp_n(const char* a, const char* b, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        char ca = a[i];
-        char cb = b[i];
-        
-        // Convert to uppercase for comparison
-        if (ca >= 'a' && ca <= 'z') ca -= 32;
-        if (cb >= 'a' && cb <= 'z') cb -= 32;
-        
-        if (ca != cb) {
+bool CommandController::actionRequiresPosition(CommandAction action) {
+    switch (action) {
+        case CommandAction::SHOW:
+        case CommandAction::HIDE:
+        case CommandAction::SUCCESS:
+        case CommandAction::BLINK:
+        case CommandAction::STOP_BLINK:
+        case CommandAction::EXPECT_DOWN:
+        case CommandAction::EXPECT_UP:
+        case CommandAction::RECALIBRATE:
+            return true;
+        default:
             return false;
+    }
+}
+
+bool CommandController::actionIsLongRunning(CommandAction action) {
+    switch (action) {
+        case CommandAction::SUCCESS:
+        case CommandAction::SCAN:
+        case CommandAction::RECALIBRATE_ALL:
+        case CommandAction::SEQUENCE_COMPLETED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// ============================================================================
+// Execution Methods
+// ============================================================================
+
+void CommandController::executeCommand(const ParsedCommand& cmd) {
+    uint32_t id = cmd.hasId ? cmd.id : NO_COMMAND_ID;
+    
+    if (actionIsLongRunning(cmd.action)) {
+        // Queue for background execution
+        if (!queueCommand(cmd)) {
+            m_eventQueue.queueError("busy", id);
+        }
+        // ACK sent when queued
+    } else {
+        // Execute immediately
+        executeInstant(cmd);
+    }
+}
+
+void CommandController::executeInstant(const ParsedCommand& cmd) {
+    uint32_t id = cmd.hasId ? cmd.id : NO_COMMAND_ID;
+    const char* action = actionToString(cmd.action);
+    bool success = false;
+    
+    switch (cmd.action) {
+        case CommandAction::SHOW:
+            success = m_ledController.show(cmd.positionIndex);
+            if (success) {
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else {
+                m_eventQueue.queueError("command_failed", id);
+            }
+            break;
+            
+        case CommandAction::HIDE:
+            success = m_ledController.hide(cmd.positionIndex);
+            if (success) {
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else {
+                m_eventQueue.queueError("command_failed", id);
+            }
+            break;
+            
+        case CommandAction::BLINK:
+            success = m_ledController.blink(cmd.positionIndex);
+            if (success) {
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else {
+                m_eventQueue.queueError("command_failed", id);
+            }
+            break;
+            
+        case CommandAction::STOP_BLINK:
+            success = m_ledController.stopBlink(cmd.positionIndex);
+            if (success) {
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else {
+                m_eventQueue.queueError("command_failed", id);
+            }
+            break;
+            
+        case CommandAction::RECALIBRATE:
+            if (m_touchController) {
+                success = m_touchController->recalibrate(cmd.positionIndex);
+                if (success) {
+                    m_eventQueue.queueAck(action, cmd.position, id);
+                    // Also emit RECALIBRATED event per protocol
+                    m_eventQueue.queueRecalibrated(cmd.position, id);
+                } else {
+                    m_eventQueue.queueError("command_failed", id);
+                }
+            } else {
+                m_eventQueue.queueError("no_touch_controller", id);
+            }
+            break;
+            
+        case CommandAction::EXPECT_DOWN:
+            if (m_touchController) {
+                m_touchController->setExpectDown(cmd.positionIndex, id);
+                m_eventQueue.queueAck(action, cmd.position, id);
+                // TOUCHED_DOWN will be emitted later when touch detected
+            } else {
+                m_eventQueue.queueError("no_touch_controller", id);
+            }
+            break;
+            
+        case CommandAction::EXPECT_UP:
+            if (m_touchController) {
+                m_touchController->setExpectUp(cmd.positionIndex, id);
+                m_eventQueue.queueAck(action, cmd.position, id);
+                // TOUCHED_UP will be emitted later when release detected
+            } else {
+                m_eventQueue.queueError("no_touch_controller", id);
+            }
+            break;
+            
+        case CommandAction::INFO:
+            m_eventQueue.queueInfo(id);
+            break;
+            
+        case CommandAction::PING:
+            m_eventQueue.queueAck("PING", 0, id);
+            break;
+            
+        default:
+            m_eventQueue.queueError("unknown_action", id);
+            break;
+    }
+}
+
+bool CommandController::queueCommand(const ParsedCommand& cmd) {
+    // Find empty slot
+    for (uint8_t i = 0; i < COMMAND_QUEUE_SIZE; i++) {
+        if (!m_commandQueue[i].active) {
+            m_commandQueue[i].command = cmd;
+            m_commandQueue[i].active = true;
+            m_commandQueue[i].startTime = millis();
+            m_commandQueue[i].state = 0;
+            m_commandQueue[i].scanAddress = 0;  // Used as sensor index for RECALIBRATE_ALL
+            
+            // Send ACK immediately
+            uint32_t id = cmd.hasId ? cmd.id : NO_COMMAND_ID;
+            const char* action = actionToString(cmd.action);
+            
+            if (cmd.action == CommandAction::SUCCESS) {
+                // Start the animation
+                m_ledController.success(cmd.positionIndex);
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else if (cmd.action == CommandAction::SCAN) {
+                if (m_touchController) {
+                    m_eventQueue.queueAck(action, 0, id);
+                } else {
+                    m_eventQueue.queueError("no_touch_controller", id);
+                    m_commandQueue[i].active = false;
+                    return false;
+                }
+            } else if (cmd.action == CommandAction::RECALIBRATE_ALL) {
+                if (m_touchController) {
+                    m_eventQueue.queueAck(action, 0, id);
+                } else {
+                    m_eventQueue.queueError("no_touch_controller", id);
+                    m_commandQueue[i].active = false;
+                    return false;
+                }
+            } else if (cmd.action == CommandAction::SEQUENCE_COMPLETED) {
+                // Start the celebration animation
+                m_ledController.startSequenceCompletedAnimation();
+                m_eventQueue.queueAck(action, 0, id);
+            }
+            
+            return true;
         }
     }
-    return true;
+    
+    return false;  // Queue full
 }
+
+void CommandController::tickCommand(QueuedCommand& qc) {
+    if (!qc.active) {
+        return;
+    }
+    
+    uint32_t id = qc.command.hasId ? qc.command.id : NO_COMMAND_ID;
+    
+    switch (qc.command.action) {
+        case CommandAction::SUCCESS: {
+            // Check if animation is complete
+            if (m_ledController.isAnimationComplete(qc.command.positionIndex)) {
+                m_eventQueue.queueDone("SUCCESS", qc.command.position, id);
+                qc.active = false;
+            }
+            break;
+        }
+        
+        case CommandAction::SCAN: {
+            // Build list of active sensors and emit SCANNED[A,B,C,...]
+            if (m_touchController) {
+                char sensorList[52];
+                m_touchController->buildActiveSensorList(sensorList, sizeof(sensorList));
+                m_eventQueue.queueScanned(sensorList, id);
+            }
+            qc.active = false;
+            break;
+        }
+        
+        case CommandAction::RECALIBRATE_ALL: {
+            // Non-blocking recalibration - recalibrate a few sensors per tick
+            const uint8_t SENSORS_PER_TICK = 5;
+            
+            if (m_touchController) {
+                for (uint8_t i = 0; i < SENSORS_PER_TICK && qc.scanAddress < NUM_TOUCH_SENSORS; i++) {
+                    m_touchController->recalibrate(qc.scanAddress);
+                    qc.scanAddress++;
+                }
+                
+                // Check if complete
+                if (qc.scanAddress >= NUM_TOUCH_SENSORS) {
+                    // Emit RECALIBRATED ALL
+                    m_eventQueue.queueRecalibrated(0, id);  // 0 = ALL
+                    qc.active = false;
+                }
+            } else {
+                qc.active = false;
+            }
+            break;
+        }
+        
+        case CommandAction::SEQUENCE_COMPLETED: {
+            // Check if animation is complete
+            if (m_ledController.isSequenceCompletedAnimationComplete()) {
+                m_eventQueue.queueDone("SEQUENCE_COMPLETED", 0, id);
+                qc.active = false;
+            }
+            break;
+        }
+        
+        default:
+            // Unknown long-running command - mark complete
+            qc.active = false;
+            break;
+    }
+}
+
+// ============================================================================
+// Utility Methods
+// ======================================================
