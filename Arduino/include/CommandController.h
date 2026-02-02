@@ -1,0 +1,138 @@
+/**
+ * @file CommandController.h
+ * @brief Serial command parser and executor
+ * 
+ * Handles all serial commands from the Raspberry Pi:
+ * 
+ * LED Commands:
+ *   SHOW <pos> [#id]              - Turn on LED (blue)
+ *   HIDE <pos> [#id]              - Turn off LED
+ *   SUCCESS <pos> [#id]           - Play green expansion animation
+ *   BLINK <pos> [#id]             - Start blinking (orange, fast)
+ *   STOP_BLINK <pos> [#id]        - Stop blinking
+ *   SEQUENCE_COMPLETED [#id]      - Play celebration animation
+ * 
+ * Touch Commands:
+ *   EXPECT <pos> [#id]            - Wait for touch
+ *   EXPECT_RELEASE <pos> [#id]    - Wait for release
+ *   RECALIBRATE <pos> [#id]       - Recalibrate single sensor
+ *   RECALIBRATE_ALL [#id]         - Recalibrate all sensors
+ * 
+ * Utility Commands:
+ *   PING [#id]                    - Health check
+ *   INFO [#id]                    - Get firmware info
+ *   SCAN [#id]                    - Scan for connected sensors
+ */
+
+#ifndef COMMAND_CONTROLLER_H
+#define COMMAND_CONTROLLER_H
+
+#include <Arduino.h>
+#include "Config.h"
+
+class LedController;
+class TouchController;
+class EventQueue;
+
+// ============================================================================
+// Command Types
+// ============================================================================
+
+enum class CommandAction : uint8_t {
+    INVALID = 0,
+    SHOW,
+    HIDE,
+    SUCCESS,
+    BLINK,
+    STOP_BLINK,
+    EXPECT,
+    EXPECT_RELEASE,
+    RECALIBRATE,
+    RECALIBRATE_ALL,
+    SCAN,
+    SEQUENCE_COMPLETED,
+    INFO,
+    PING
+};
+
+// ============================================================================
+// Parsed Command Structure
+// ============================================================================
+
+struct ParsedCommand {
+    CommandAction action;
+    bool hasPosition;
+    char position;
+    uint8_t positionIndex;
+    bool hasId;
+    uint32_t id;
+    bool valid;
+};
+
+// ============================================================================
+// Queued Command (for long-running commands)
+// ============================================================================
+
+struct QueuedCommand {
+    ParsedCommand command;
+    bool active;
+    uint32_t startTime;
+    uint8_t state;
+};
+
+// ============================================================================
+// CommandController Class
+// ============================================================================
+
+class CommandController {
+public:
+    CommandController(LedController& ledController, 
+                      TouchController* touchController,
+                      EventQueue& eventQueue);
+    
+    void begin();
+    void pollSerial();
+    void processCompletedLines();
+    void tick();
+    bool isQueueFull() const;
+
+private:
+    LedController& m_ledController;
+    TouchController* m_touchController;
+    EventQueue& m_eventQueue;
+    
+    // Ring buffer for incoming serial data
+    char m_rxBuffer[MAX_LINE_LEN * 2];
+    uint8_t m_rxHead;
+    uint8_t m_rxTail;
+    
+    // Line buffer for parsing
+    char m_lineBuffer[MAX_LINE_LEN];
+    uint8_t m_lineIndex;
+    bool m_lineOverflow;
+    
+    // Command queue
+    QueuedCommand m_commandQueue[COMMAND_QUEUE_SIZE];
+    
+    // Parsing methods
+    bool extractLine();
+    bool parseLine(const char* line, ParsedCommand& cmd);
+    static CommandAction parseAction(const char* str, size_t len);
+    static const char* actionToString(CommandAction action);
+    static bool actionRequiresPosition(CommandAction action);
+    static bool actionIsLongRunning(CommandAction action);
+    
+    // Execution methods
+    void executeCommand(const ParsedCommand& cmd);
+    void executeInstant(const ParsedCommand& cmd);
+    bool queueCommand(const ParsedCommand& cmd);
+    void tickCommand(QueuedCommand& qc);
+    
+    // Utilities
+    static const char* skipWhitespace(const char* str);
+    static const char* findTokenEnd(const char* str);
+    static bool strcasecmpN(const char* a, const char* b, size_t len);
+    static uint8_t charToIndex(char c);
+};
+
+#endif // COMMAND_CONTROLLER_H

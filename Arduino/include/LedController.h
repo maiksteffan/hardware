@@ -1,0 +1,93 @@
+/**
+ * @file LedController.h
+ * @brief LED Controller for dual addressable LED strips
+ * 
+ * Manages 25 logical LED positions (A-Y) mapped to two physical LED strips.
+ * Supports SHOW, HIDE, SUCCESS, BLINK, STOP_BLINK, and SEQUENCE_COMPLETED.
+ */
+
+#ifndef LED_CONTROLLER_H
+#define LED_CONTROLLER_H
+
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+#include "Config.h"
+
+// ============================================================================
+// Types
+// ============================================================================
+
+enum class StripId : uint8_t { STRIP1 = 0, STRIP2 = 1 };
+
+struct LedMapping {
+    StripId strip;
+    uint8_t index;
+};
+
+enum class PositionState : uint8_t {
+    OFF,
+    SHOWN,
+    ANIMATING,
+    EXPANDED,
+    BLINKING
+};
+
+struct PositionData {
+    PositionState state;
+    uint8_t animationStep;
+    uint32_t lastAnimationTime;
+    bool blinkOn;
+};
+
+// ============================================================================
+// LedController Class
+// ============================================================================
+
+class LedController {
+public:
+    LedController();
+    
+    void begin();
+    void tick();
+    
+    // LED commands
+    bool show(uint8_t position);
+    bool hide(uint8_t position);
+    bool success(uint8_t position);
+    bool blink(uint8_t position);
+    bool stopBlink(uint8_t position);
+    
+    // Sequence animation
+    void startSequenceCompletedAnimation();
+    bool isSequenceCompletedAnimationComplete() const;
+    
+    // State queries
+    bool isAnimationComplete(uint8_t position) const;
+    bool isBlinking(uint8_t position) const;
+    
+    // Utilities
+    static uint8_t charToPosition(char c);
+    static char positionToChar(uint8_t pos);
+
+private:
+    Adafruit_NeoPixel m_strip1;
+    Adafruit_NeoPixel m_strip2;
+    PositionData m_positions[NUM_POSITIONS];
+    
+    bool m_sequenceAnimActive;
+    uint8_t m_sequenceAnimStep;
+    uint32_t m_sequenceAnimLastTime;
+    bool m_needsUpdate;
+    
+    void update(uint32_t nowMillis);
+    const LedMapping* getMapping(uint8_t position) const;
+    Adafruit_NeoPixel* getStrip(StripId strip);
+    uint16_t getStripLength(StripId strip) const;
+    void setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b);
+    void clearExpandedRegion(uint8_t position, const LedMapping* mapping);
+    void updateAnimation(uint8_t position, uint32_t nowMillis);
+    void updateBlinking(uint32_t nowMillis);
+    void updateSequenceCompletedAnimation(uint32_t nowMillis);
+};
+
+#endif // LED_CONTROLLER_H
