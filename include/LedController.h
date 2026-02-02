@@ -11,6 +11,7 @@
  *   SUCCESS             - Non-blocking expansion animation
  *   BLINK               - Start blinking LED at position
  *   STOP_BLINK          - Stop blinking LED at position
+ *   MISTAKE             - Light LED red (wrong hold indicator)
  *   SEQUENCE_COMPLETED  - Celebration animation on all LEDs
  */
 
@@ -48,7 +49,8 @@ enum class PositionState : uint8_t {
     SHOWN,         // Single LED lit (SHOW command)
     ANIMATING,     // SUCCESS animation in progress
     EXPANDED,      // SUCCESS animation complete, expanded region lit
-    BLINKING       // LED is blinking on/off
+    BLINKING,      // LED is blinking on/off
+    MISTAKE        // LED lit red (wrong hold)
 };
 
 // ============================================================================
@@ -118,6 +120,13 @@ public:
     bool stopBlink(uint8_t position);
 
     /**
+     * @brief Show mistake indicator (RED) at the specified position
+     * @param position Position index (0 = A, 24 = Y)
+     * @return true if successful
+     */
+    bool mistake(uint8_t position);
+
+    /**
      * @brief Check if position is currently blinking
      * @param position Position index (0 = A, 24 = Y)
      * @return true if blinking
@@ -156,6 +165,17 @@ public:
     bool isSequenceCompletedAnimationComplete() const;
 
     /**
+     * @brief Start SEQUENCE_FAIL animation on all LEDs (red pulse)
+     */
+    void startSequenceFailAnimation();
+
+    /**
+     * @brief Check if SEQUENCE_FAIL animation is complete
+     * @return true if animation is complete or not running
+     */
+    bool isSequenceFailAnimationComplete() const;
+
+    /**
      * @brief Convert position character (A-Y) to index (0-24)
      * @param c Position character (case-insensitive)
      * @return Position index, or 255 if invalid
@@ -182,71 +202,6 @@ private:
     uint8_t m_sequenceAnimStep;      // Current animation step
     uint32_t m_sequenceAnimLastTime; // Last animation step time
 
-    // Flag to indicate strip.show() is needed
-    bool m_needsUpdate;
-
-    /**
-     * @brief Get the LED mapping for a position
-     * @param position Position index (0-24)
-     * @return Pointer to mapping, or nullptr if invalid
-     */
-    const LedMapping* getMapping(uint8_t position) const;
-
-    /**
-     * @brief Get the LED count for a strip
-     * @param strip Strip identifier
-     * @return Number of LEDs
-     */
-    uint16_t getStripLength(StripId strip) const;
-
-    /**
-     * @brief Get pointer to NeoPixel strip
-     * @param strip Strip identifier
-     * @return Pointer to strip
-     */
-    Adafruit_NeoPixel* getStrip(StripId strip);
-
-    /**
-     * @brief Set a single LED color
-     * @param strip Strip identifier
-     * @param index LED index
-     * @param r Red component
-     * @param g Green component
-     * @param b Blue component
-     */
-    void setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b);
-
-    /**
-     * @brief Clear the expanded region for a position
-     * @param position Position index
-     * @param mapping LED mapping
-     */
-    void clearExpandedRegion(uint8_t position, const LedMapping* mapping);
-
-    /**
-     * @brief Render the current state of a position
-     * @param position Position index
-     */
-    void renderPosition(uint8_t position);
-
-    /**
-     * @brief Update animation for a single position
-     * @param position Position index
-     * @param nowMillis Current time
-     */
-    void updateAnimation(uint8_t position, uint32_t nowMillis);
-
-    /**
-     * @brief Update SEQUENCE_COMPLETED animation
-     * @param nowMillis Current time
-     */
-    void updateSequenceCompletedAnimation(uint32_t nowMillis);
-
-    /**
-     * @brief Update blink state for blinking positions
-     * @param nowMillis Current time
-     */
-    void updateBlinking(uint32_t nowMillis);
-};
-
-#endif // LED_CONTROLLER_H
+    // SEQUENCE_FAIL animation state
+    bool m_sequenceFailAnimActive;       // Whether fail animation is running
+    uint8_t m_

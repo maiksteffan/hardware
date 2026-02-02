@@ -331,11 +331,14 @@ CommandAction CommandController::parseAction(const char* str, size_t len) {
     if (len == 10 && strcasecmpN(str, "STOP_BLINK", 10)) {
         return CommandAction::STOP_BLINK;
     }
-    if (len == 11 && strcasecmpN(str, "EXPECT_DOWN", 11)) {
-        return CommandAction::EXPECT_DOWN;
+    if (len == 7 && strcasecmpN(str, "MISTAKE", 7)) {
+        return CommandAction::MISTAKE;
     }
-    if (len == 9 && strcasecmpN(str, "EXPECT_UP", 9)) {
-        return CommandAction::EXPECT_UP;
+    if (len == 6 && strcasecmpN(str, "EXPECT", 6)) {
+        return CommandAction::EXPECT;
+    }
+    if (len == 14 && strcasecmpN(str, "EXPECT_RELEASE", 14)) {
+        return CommandAction::EXPECT_RELEASE;
     }
     if (len == 11 && strcasecmpN(str, "RECALIBRATE", 11)) {
         return CommandAction::RECALIBRATE;
@@ -348,6 +351,9 @@ CommandAction CommandController::parseAction(const char* str, size_t len) {
     }
     if (len == 18 && strcasecmpN(str, "SEQUENCE_COMPLETED", 18)) {
         return CommandAction::SEQUENCE_COMPLETED;
+    }
+    if (len == 13 && strcasecmpN(str, "SEQUENCE_FAIL", 13)) {
+        return CommandAction::SEQUENCE_FAIL;
     }
     if (len == 4 && strcasecmpN(str, "INFO", 4)) {
         return CommandAction::INFO;
@@ -366,13 +372,15 @@ const char* CommandController::actionToString(CommandAction action) {
         case CommandAction::SUCCESS:            return "SUCCESS";
         case CommandAction::BLINK:              return "BLINK";
         case CommandAction::STOP_BLINK:         return "STOP_BLINK";
-        case CommandAction::EXPECT_DOWN:        return "EXPECT_DOWN";
-        case CommandAction::EXPECT_UP:          return "EXPECT_UP";
+        case CommandAction::MISTAKE:            return "MISTAKE";
+        case CommandAction::EXPECT:             return "EXPECT";
+        case CommandAction::EXPECT_RELEASE:     return "EXPECT_RELEASE";
         case CommandAction::RECALIBRATE:        return "RECALIBRATE";
         case CommandAction::RECALIBRATE_ALL:    return "RECALIBRATE_ALL";
         case CommandAction::SCAN:               return "SCAN";
         case CommandAction::SEQUENCE_COMPLETED: return "SEQUENCE_COMPLETED";
-        case CommandAction::INFO:               return "INFO";
+        case CommandAction::SEQUENCE_FAIL:      return "SEQUENCE_FAIL";
+        case CommandAction::INFO:               return "INFO";;
         case CommandAction::PING:               return "PING";
         default:                                return "UNKNOWN";
     }
@@ -385,8 +393,9 @@ bool CommandController::actionRequiresPosition(CommandAction action) {
         case CommandAction::SUCCESS:
         case CommandAction::BLINK:
         case CommandAction::STOP_BLINK:
-        case CommandAction::EXPECT_DOWN:
-        case CommandAction::EXPECT_UP:
+        case CommandAction::MISTAKE:
+        case CommandAction::EXPECT:
+        case CommandAction::EXPECT_RELEASE:
         case CommandAction::RECALIBRATE:
             return true;
         default:
@@ -400,6 +409,7 @@ bool CommandController::actionIsLongRunning(CommandAction action) {
         case CommandAction::SCAN:
         case CommandAction::RECALIBRATE_ALL:
         case CommandAction::SEQUENCE_COMPLETED:
+        case CommandAction::SEQUENCE_FAIL:
             return true;
         default:
             return false;
@@ -467,6 +477,15 @@ void CommandController::executeInstant(const ParsedCommand& cmd) {
             }
             break;
             
+        case CommandAction::MISTAKE:
+            success = m_ledController.mistake(cmd.positionIndex);
+            if (success) {
+                m_eventQueue.queueAck(action, cmd.position, id);
+            } else {
+                m_eventQueue.queueError("command_failed", id);
+            }
+            break;
+            
         case CommandAction::RECALIBRATE:
             if (m_touchController) {
                 success = m_touchController->recalibrate(cmd.positionIndex);
@@ -482,21 +501,21 @@ void CommandController::executeInstant(const ParsedCommand& cmd) {
             }
             break;
             
-        case CommandAction::EXPECT_DOWN:
+        case CommandAction::EXPECT:
             if (m_touchController) {
                 m_touchController->setExpectDown(cmd.positionIndex, id);
                 m_eventQueue.queueAck(action, cmd.position, id);
-                // TOUCHED_DOWN will be emitted later when touch detected
+                // TOUCHED will be emitted later when touch detected
             } else {
                 m_eventQueue.queueError("no_touch_controller", id);
             }
             break;
             
-        case CommandAction::EXPECT_UP:
+        case CommandAction::EXPECT_RELEASE:
             if (m_touchController) {
                 m_touchController->setExpectUp(cmd.positionIndex, id);
                 m_eventQueue.queueAck(action, cmd.position, id);
-                // TOUCHED_UP will be emitted later when release detected
+                // TOUCH_RELEASED will be emitted later when release detected
             } else {
                 m_eventQueue.queueError("no_touch_controller", id);
             }
@@ -553,6 +572,10 @@ bool CommandController::queueCommand(const ParsedCommand& cmd) {
             } else if (cmd.action == CommandAction::SEQUENCE_COMPLETED) {
                 // Start the celebration animation
                 m_ledController.startSequenceCompletedAnimation();
+                m_eventQueue.queueAck(action, 0, id);
+            } else if (cmd.action == CommandAction::SEQUENCE_FAIL) {
+                // Start the fail animation
+                m_ledController.startSequenceFailAnimation();
                 m_eventQueue.queueAck(action, 0, id);
             }
             
@@ -622,6 +645,15 @@ void CommandController::tickCommand(QueuedCommand& qc) {
             break;
         }
         
+        case CommandAction::SEQUENCE_FAIL: {
+            // Check if fail animation is complete
+            if (m_ledController.isSequenceFailAnimationComplete()) {
+                m_eventQueue.queueDone("SEQUENCE_FAIL", 0, id);
+                qc.active = false;
+            }
+            break;
+        }
+        
         default:
             // Unknown long-running command - mark complete
             qc.active = false;
@@ -631,4 +663,48 @@ void CommandController::tickCommand(QueuedCommand& qc) {
 
 // ============================================================================
 // Utility Methods
-// ======================================================
+// ============================================================================
+
+const char* CommandController::skipWhitespace(const char* str) {
+    while (*str == ' ' || *str == '\t') {
+        str++;
+    }
+    return str;
+}
+
+const char* CommandController::findTokenEnd(const char* str) {
+    while (*str != '\0' && *str != ' ' && *str != '\t' && *str != '\n' && *str != '\r') {
+        str++;
+    }
+    return str;
+}
+
+bool CommandController::strcasecmpN(const char* a, const char* b, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        char ca = a[i];
+        char cb = b[i];
+        
+        // Convert to uppercase
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint8_t CommandController::charToIndex(char c) {
+    // Convert to uppercase
+    if (c >= 'a' && c <= 'y') {
+        c = c - 'a' + 'A';
+    }
+    
+    // Validate range A-Y
+    if (c >= 'A' && c <= 'Y') {
+        return c - 'A';
+    }
+    
+    return 255;  // Invalid
+}

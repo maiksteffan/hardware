@@ -22,8 +22,8 @@ enum class EventType : uint8_t {
     ERR,            // Command error
     TOUCH_DOWN,     // Touch sensor pressed (spontaneous)
     TOUCH_UP,       // Touch sensor released (spontaneous)
-    TOUCHED_DOWN,   // Expected touch detected (EXPECT_DOWN fulfilled)
-    TOUCHED_UP,     // Expected release detected (EXPECT_UP fulfilled)
+    TOUCHED,        // Expected touch detected (EXPECT fulfilled)
+    TOUCH_RELEASED, // Expected release detected (EXPECT_RELEASE fulfilled)
     SCANNED,        // I2C scan completed with list of active sensors
     RECALIBRATED,   // Sensor(s) recalibrated
     SCAN_RESULT,    // I2C device found during scan (legacy)
@@ -147,4 +147,54 @@ public:
     bool queueScanned(const char* sensorList, uint32_t commandId = NO_COMMAND_ID);
 
     /**
-     * @brief Queue a TOUCHED_DOWN event
+     * @brief Queue a TOUCHED event (expected touch detected)
+     * @param position Position letter
+     * @param commandId Command ID (NO_COMMAND_ID if none)
+     * @return true if queued successfully
+     */
+    bool queueTouched(char position, uint32_t commandId = NO_COMMAND_ID);
+
+    /**
+     * @brief Queue a TOUCH_RELEASED event (expected release detected)
+     * @param position Position letter
+     * @param commandId Command ID (NO_COMMAND_ID if none)
+     * @return true if queued successfully
+     */
+    bool queueTouchReleased(char position, uint32_t commandId = NO_COMMAND_ID);
+
+    /**
+     * @brief Queue a RECALIBRATED event
+     * @param position Position letter (0 for ALL)
+     * @param commandId Command ID (NO_COMMAND_ID if none)
+     * @return true if queued successfully
+     */
+    bool queueRecalibrated(char position, uint32_t commandId = NO_COMMAND_ID);
+
+    /**
+     * @brief Queue an INFO response
+     * @param commandId Command ID (NO_COMMAND_ID if none)
+     * @return true if queued successfully
+     */
+    bool queueInfo(uint32_t commandId = NO_COMMAND_ID);
+
+private:
+    Event m_queue[EVENT_QUEUE_SIZE];
+    uint8_t m_head;  // Next write position
+    uint8_t m_tail;  // Next read position
+    uint8_t m_count; // Number of items in queue
+
+    /**
+     * @brief Add an event to the queue
+     * @param event Event to add
+     * @return true if added successfully
+     */
+    bool enqueue(const Event& event);
+
+    /**
+     * @brief Format and send an event to serial
+     * @param event Event to send
+     */
+    void sendEvent(const Event& event);
+};
+
+#endif // EVENT_QUEUE_H

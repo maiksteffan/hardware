@@ -24,8 +24,8 @@
  *   SHOW <pos> [#id]         Turn on LED at position (blue)
  *   HIDE <pos> [#id]         Turn off LED at position
  *   SUCCESS <pos> [#id]      Play success animation (green, non-blocking)
- *   EXPECT_DOWN <pos> [#id]  Wait for touch, emit TOUCHED_DOWN
- *   EXPECT_UP <pos> [#id]    Wait for release, emit TOUCHED_UP
+ *   EXPECT <pos> [#id]       Wait for touch, emit TOUCHED
+ *   EXPECT_RELEASE <pos> [#id] Wait for release, emit TOUCH_RELEASED
  *   RECALIBRATE <pos> [#id]  Recalibrate touch sensor
  *   RECALIBRATE_ALL [#id]    Recalibrate all sensors
  *   SEQUENCE_COMPLETED [#id] Play celebration animation
@@ -39,8 +39,8 @@
  *   ERR <reason> [#id]           Command failed
  *   TOUCH_DOWN <pos>             Touch sensor pressed (spontaneous)
  *   TOUCH_UP <pos>               Touch sensor released (spontaneous)
- *   TOUCHED_DOWN <pos> [#id]     Expected touch detected
- *   TOUCHED_UP <pos> [#id]       Expected release detected
+ *   TOUCHED <pos> [#id]          Expected touch detected
+ *   TOUCH_RELEASED <pos> [#id]   Expected release detected
  *   SCANNED[A,B,C,...] [#id]     Active sensors list
  *   RECALIBRATED <pos|ALL> [#id] Recalibration complete
  *   INFO version=... [#id]       Firmware information
@@ -61,7 +61,6 @@
  * =============================================================================
  */
 
-#include <Arduino.h>
 #include "Config.h"
 #include "LedController.h"
 #include "TouchController.h"
@@ -69,30 +68,52 @@
 #include "EventQueue.h"
 
 // ============================================================================
-// Mock Pi Configuration
+// Mock Pi Configuration (New Protocol-Based System)
 // ============================================================================
 // Uncomment to enable Mock Pi testing (simulates Pi commands on-device)
-#define ENABLE_MOCK_PI 1
+#define ENABLE_NEW_MOCK_PI 1
 
-// Select which program to run (1, 2, 3, or 4)
-// 1 = Simple sequence (positions: ABCDE)
-// 2 = Simultaneous sequence (spec: "A,B,(C+D),(E+F)")  
-// 3 = Record then playback mode
-// 4 = Two-hand overlapping sequence (positions: ABCDEFG)
-#define MOCK_PI_PROGRAM 4
+// ============================================================================
+// Mode Selection: RECORD or PLAY
+// ============================================================================
+// MOCK_PI_MODE_RECORD: Touch sensors to record a sequence, then auto-play it
+// MOCK_PI_MODE_PLAY: Play a predefined sequence string
+#define MOCK_PI_MODE_RECORD 0
+#define MOCK_PI_MODE_PLAY   1
 
-// Sequence for Program 1 (simple sequential)
-#define MOCK_PI_SIMPLE_SEQUENCE "ABCDE"
+// *** SELECT MODE HERE ***
+#define MOCK_PI_MODE MOCK_PI_MODE_RECORD
 
-// Specification for Program 2 (simultaneous steps)
-#define MOCK_PI_SIMULTANEOUS_SPEC "A,B,(C+D),(E+F)"
+// *** CHANGE THIS STRING TO RUN DIFFERENT SEQUENCES (for PLAY mode) ***
+// Format: comma-separated positions, use + for simultaneous touches
+// Examples:
+//   "A,B,C,D,E"           - Simple sequential
+//   "A,B,C,D,E+F,G+H,I,J,K" - Mixed single and pair touches
+//   "A,G,N,P+T,F,G+H,O+L,R,Q" - Complex pattern
+#define MOCK_PI_SEQUENCE "X,C,K,A+Q,E+Y,K,M"
 
-// Sequence for Program 4 (two-hand overlapping)
-#define MOCK_PI_TWO_HAND_SEQUENCE "ABCDEFG"
+// Whether to send PING/INFO before starting the sequence
+#define MOCK_PI_DO_INIT true
 
-#ifdef ENABLE_MOCK_PI
-#include "MockPiPrograms.h"
+// Enable verbose logging
+#define MOCK_PI_VERBOSE true
+
+#ifdef ENABLE_NEW_MOCK_PI
+#include "mock_pi/MockPi.h"
+#include "mock_pi/MockPiRecorder.h"
 #endif
+
+// ============================================================================
+// Legacy Mock Pi Configuration (kept for reference, disabled)
+// ============================================================================
+// #define ENABLE_MOCK_PI 1
+// #define MOCK_PI_PROGRAM 2
+// #define MOCK_PI_SIMPLE_SEQUENCE "ABCDE"
+// #define MOCK_PI_SIMULTANEOUS_SPEC "A,B,(C+D),(E+F)"
+// #define MOCK_PI_TWO_HAND_SEQUENCE "ABCDEFG"
+// #ifdef ENABLE_MOCK_PI
+// #include "MockPiPrograms.h"
+// #endif
 
 // ============================================================================
 // Global Instances
@@ -110,9 +131,11 @@ TouchController touchController;
 // Command controller handles serial protocol
 CommandController commandController(ledController, &touchController, eventQueue);
 
-#ifdef ENABLE_MOCK_PI
-// Mock Pi for on-device testing
-MockPiPrograms mockPi;
+#ifdef ENABLE_NEW_MOCK_PI
+// New protocol-based Mock Pi subsystem
+MockPI::MockPi newMockPi;
+MockPI::MockPiRecorder mockPiRecorder;
+bool recordingComplete = false;
 #endif
 
 // ============================================================================
@@ -129,77 +152,16 @@ void setup() {
         // Wait
     }
     
+    Serial.println("ARDUINO> Initializing...");
+    
     // Initialize event queue
     eventQueue.begin();
     
     // Initialize LED controller
     ledController.begin();
+    Serial.println("ARDUINO> LED controller ready");
     
-    // Initialize touch controller
+    // Initialize touch controller (this now includes delays and recalibration)
+    Serial.println("ARDUINO> Initializing touch sensors (please wait)...");
     touchController.setEventQueue(&eventQueue);
-    touchController.begin();
-    
-    // Initialize command controller
-    commandController.begin();
-    
-    // Signal ready - send INFO automatically
-    eventQueue.queueInfo(NO_COMMAND_ID);
-    eventQueue.flush(1);
-    
-#ifdef ENABLE_MOCK_PI
-    // Initialize Mock Pi
-    mockPi.begin();
-    mockPi.setTouchController(&touchController);
-    mockPi.setCommandController(&commandController);
-    mockPi.setVerbose(true);
-    
-    // Small delay to let serial settle
-    delay(500);
-    
-    // Start the selected program
-    #if MOCK_PI_PROGRAM == 1
-        Serial.println("MockPi: Starting Program 1 - Simple Sequence");
-        mockPi.startSequenceSimple(MOCK_PI_SIMPLE_SEQUENCE);
-    #elif MOCK_PI_PROGRAM == 2
-        Serial.println("MockPi: Starting Program 2 - Simultaneous Sequence");
-        mockPi.startSequenceSimultaneous(MOCK_PI_SIMULTANEOUS_SPEC);
-    #elif MOCK_PI_PROGRAM == 3
-        Serial.println("MockPi: Starting Program 3 - Record & Playback");
-        mockPi.startRecordPlayback();
-    #elif MOCK_PI_PROGRAM == 4
-        Serial.println("MockPi: Starting Program 4 - Two-Hand Sequence");
-        mockPi.startTwoHandSequence(MOCK_PI_TWO_HAND_SEQUENCE);
-    #else
-        Serial.println("MockPi: No program selected (set MOCK_PI_PROGRAM to 1, 2, 3, or 4)");
-    #endif
-#endif
-}
-
-// ============================================================================
-// Arduino Main Loop
-// ============================================================================
-
-void loop() {
-    // 1. Poll serial for incoming data (non-blocking)
-    commandController.pollSerial();
-    
-    // 2. Process any complete command lines
-    commandController.processCompletedLines();
-    
-    // 3. Tick command executor for long-running commands
-    commandController.tick();
-    
-    // 4. Tick touch controller (poll sensors, debounce, emit events)
-    touchController.tick();
-    
-    // 5. Tick LED controller (update animations)
-    ledController.tick();
-    
-    // 6. Flush pending events to serial
-    eventQueue.flush(3);  // Send up to 3 events per loop
-    
-#ifdef ENABLE_MOCK_PI
-    // 7. Update Mock Pi state machine
-    mockPi.update();
-#endif
-}
+    touchController

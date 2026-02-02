@@ -11,8 +11,9 @@
  *   SUCCESS <pos> [#id]        - Play success animation
  *   BLINK <pos> [#id]          - Start blinking LED at position
  *   STOP_BLINK <pos> [#id]     - Stop blinking LED at position
- *   EXPECT_DOWN <pos> [#id]    - Wait for touch, then emit TOUCHED_DOWN
- *   EXPECT_UP <pos> [#id]      - Wait for release, then emit TOUCHED_UP
+ *   MISTAKE <pos> [#id]        - Show red LED (wrong hold indicator)
+ *   EXPECT <pos> [#id]         - Wait for touch, then emit TOUCHED
+ *   EXPECT_RELEASE <pos> [#id] - Wait for release, then emit TOUCH_RELEASED
  *   RECALIBRATE <pos> [#id]    - Recalibrate single touch sensor
  *   RECALIBRATE_ALL [#id]      - Recalibrate all touch sensors
  *   SCAN [#id]                 - Scan I2C, return SCANNED[A,B,C,...]
@@ -43,12 +44,14 @@ enum class CommandAction : uint8_t {
     SUCCESS,
     BLINK,
     STOP_BLINK,
-    EXPECT_DOWN,
-    EXPECT_UP,
+    MISTAKE,
+    EXPECT,
+    EXPECT_RELEASE,
     RECALIBRATE,
     RECALIBRATE_ALL,
     SCAN,
     SEQUENCE_COMPLETED,
+    SEQUENCE_FAIL,
     INFO,
     PING
 };
@@ -247,4 +250,10 @@ private:
 
     /**
      * @brief Convert position character to index
-     * @param c Character 
+     * @param c Character 'A'-'Y' (case insensitive)
+     * @return Index 0-24 or 255 if invalid
+     */
+    static uint8_t charToIndex(char c);
+};
+
+#endif // COMMAND_CONTROLLER_H

@@ -122,8 +122,8 @@ void MockPiPrograms::feedEventLine(const char* line) {
     uint32_t cmdId = NO_COMMAND_ID;
     
     // Try to parse common event formats:
-    // TOUCHED_DOWN A [#id]
-    // TOUCHED_UP A [#id]
+    // TOUCHED A [#id]
+    // TOUCH_RELEASED A [#id]
     // TOUCH_DOWN A
     // TOUCH_UP A
     // ACK SHOW A [#id]
@@ -463,18 +463,18 @@ void MockPiPrograms::updateStateMachine() {
             for (uint8_t i = 0; i < step.positionCount; i++) {
                 sendCommandWithPos("SHOW", step.positions[i]);
             }
-            transitionTo(MockPiState::STEP_EXPECT_DOWN);
+            transitionTo(MockPiState::STEP_EXPECT);
             break;
         }
         
-        case MockPiState::STEP_EXPECT_DOWN: {
-            // Wait a bit for SHOW ACKs, then send EXPECT_DOWN
+        case MockPiState::STEP_EXPECT: {
+            // Wait a bit for SHOW ACKs, then send EXPECT
             if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
                 SequenceStep& step = currentStepData();
                 m_stepTouchedMask = 0;
                 m_firstTouchTime = 0;
                 for (uint8_t i = 0; i < step.positionCount; i++) {
-                    sendCommandWithPos("EXPECT_DOWN", step.positions[i]);
+                    sendCommandWithPos("EXPECT", step.positions[i]);
                 }
                 transitionTo(MockPiState::STEP_WAIT_TOUCH);
             }
@@ -522,17 +522,17 @@ void MockPiPrograms::updateStateMachine() {
                 for (uint8_t i = 0; i < step.positionCount; i++) {
                     sendCommandWithPos("SUCCESS", step.positions[i]);
                 }
-                transitionTo(MockPiState::STEP_EXPECT_UP);
+                transitionTo(MockPiState::STEP_EXPECT_RELEASE);
             }
             break;
         }
         
-        case MockPiState::STEP_EXPECT_UP: {
-            // Wait a bit, then send EXPECT_UP
+        case MockPiState::STEP_EXPECT_RELEASE: {
+            // Wait a bit, then send EXPECT_RELEASE
             if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
                 SequenceStep& step = currentStepData();
                 for (uint8_t i = 0; i < step.positionCount; i++) {
-                    sendCommandWithPos("EXPECT_UP", step.positions[i]);
+                    sendCommandWithPos("EXPECT_RELEASE", step.positions[i]);
                 }
                 transitionTo(MockPiState::STEP_WAIT_RELEASE);
             }
@@ -622,7 +622,7 @@ void MockPiPrograms::updateStateMachine() {
             if (m_twoHandCurrent < m_twoHandCount) {
                 char pos = m_twoHandPositions[m_twoHandCurrent];
                 sendCommandWithPos("SHOW", pos);
-                transitionTo(MockPiState::TWO_HAND_EXPECT_DOWN);
+                transitionTo(MockPiState::TWO_HAND_EXPECT);
             } else {
                 // No more positions, go to final cleanup
                 m_twoHandCleanupIndex = (m_twoHandCount >= 1) ? (m_twoHandCount - 1) : 0;
@@ -631,12 +631,12 @@ void MockPiPrograms::updateStateMachine() {
             break;
         }
         
-        case MockPiState::TWO_HAND_EXPECT_DOWN: {
-            // Wait a bit, then send EXPECT_DOWN
+        case MockPiState::TWO_HAND_EXPECT: {
+            // Wait a bit, then send EXPECT
             if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
                 char pos = m_twoHandPositions[m_twoHandCurrent];
                 m_stepTouchedMask = 0;
-                sendCommandWithPos("EXPECT_DOWN", pos);
+                sendCommandWithPos("EXPECT", pos);
                 transitionTo(MockPiState::TWO_HAND_WAIT_TOUCH);
             }
             break;
@@ -673,4 +673,256 @@ void MockPiPrograms::updateStateMachine() {
                     }
                     transitionTo(MockPiState::TWO_HAND_FINAL_CLEANUP);
                 }
-                // After touching position N and SUCCESS, if N >= 1, we blink posit
+                // After touching position N and SUCCESS, if N >= 1, we blink position N-1
+                else if (m_twoHandCurrent >= 1) {
+                    transitionTo(MockPiState::TWO_HAND_BLINK_OLD);
+                } else {
+                    // First position - just move to showing next
+                    transitionTo(MockPiState::TWO_HAND_NEXT);
+                }
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_BLINK_OLD: {
+            // Start blinking the previous position (N-1)
+            if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
+                char oldPos = m_twoHandPositions[m_twoHandCurrent - 1];
+                logf("MockPi: Starting blink on %c", oldPos);
+                sendCommandWithPos("BLINK", oldPos);
+                transitionTo(MockPiState::TWO_HAND_EXPECT_RELEASE_OLD);
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_EXPECT_RELEASE_OLD: {
+            // Send EXPECT_RELEASE for the blinking position
+            if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
+                char oldPos = m_twoHandPositions[m_twoHandCurrent - 1];
+                sendCommandWithPos("EXPECT_RELEASE", oldPos);
+                transitionTo(MockPiState::TWO_HAND_WAIT_RELEASE);
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_WAIT_RELEASE: {
+            // Wait for release (with timeout)
+            if (elapsed >= MOCK_PI_STEP_TIMEOUT_MS / 2) {
+                // Timeout - proceed anyway
+                log("MockPi: Release timeout, continuing");
+                transitionTo(MockPiState::TWO_HAND_STOP_BLINK_HIDE);
+                break;
+            }
+            
+            // Check if old position was released
+            char oldPos = m_twoHandPositions[m_twoHandCurrent - 1];
+            bool isStillTouched = (m_currentlyTouched & posToBit(oldPos)) != 0;
+            if (!isStillTouched) {
+                // Released! Stop blink and hide
+                logf("MockPi: Position %c released", oldPos);
+                transitionTo(MockPiState::TWO_HAND_STOP_BLINK_HIDE);
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_STOP_BLINK_HIDE: {
+            // Stop blink, hide the old position, then show next position
+            if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
+                char oldPos = m_twoHandPositions[m_twoHandCurrent - 1];
+                logf("MockPi: Stop blink and hide %c", oldPos);
+                sendCommandWithPos("STOP_BLINK", oldPos);
+                sendCommandWithPos("HIDE", oldPos);
+                transitionTo(MockPiState::TWO_HAND_NEXT);
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_NEXT: {
+            // Move to next position
+            if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
+                m_twoHandCurrent++;
+                m_stepTouchedMask = 0;
+                logf("MockPi: Moving to position %d of %d", m_twoHandCurrent + 1, m_twoHandCount);
+                
+                if (m_twoHandCurrent >= m_twoHandCount) {
+                    // All positions done
+                    transitionTo(MockPiState::SEQUENCE_COMPLETE);
+                } else {
+                    logf("MockPi: Two-hand step %d of %d", m_twoHandCurrent + 1, m_twoHandCount);
+                    transitionTo(MockPiState::TWO_HAND_SHOW);
+                }
+            }
+            break;
+        }
+        
+        case MockPiState::TWO_HAND_FINAL_CLEANUP: {
+            // Release and hide the last held position(s)
+            // At sequence end, we may have one position still showing (the second-to-last if count >= 2)
+            if (elapsed >= MOCK_PI_INTER_STEP_DELAY_MS) {
+                // Release positions from twoHandCleanupIndex to (count-2) inclusive
+                // The last position (count-1) just got SUCCESS'd, no need to hide
+                if (m_twoHandCleanupIndex < m_twoHandCount - 1) {
+                    char pos = m_twoHandPositions[m_twoHandCleanupIndex];
+                    logf("MockPi: Final cleanup - stopping blink and hiding %c", pos);
+                    sendCommandWithPos("STOP_BLINK", pos);
+                    sendCommandWithPos("EXPECT_RELEASE", pos);
+                    sendCommandWithPos("HIDE", pos);
+                    m_twoHandCleanupIndex++;
+                    // Stay in this state to cleanup next position
+                    m_stateStartTime = millis();
+                } else {
+                    // All cleaned up, send SEQUENCE_COMPLETED
+                    transitionTo(MockPiState::SEQUENCE_COMPLETE);
+                }
+            }
+            break;
+        }
+        
+        case MockPiState::RECORDING: {
+            // Check for idle timeout to end recording
+            if (m_recordedCount > 0 && m_currentlyTouched == 0) {
+                transitionTo(MockPiState::RECORDING_IDLE_CHECK);
+            }
+            break;
+        }
+        
+        case MockPiState::RECORDING_IDLE_CHECK: {
+            // If still idle after threshold, start playback
+            if (m_currentlyTouched != 0) {
+                // Touch detected, go back to recording
+                transitionTo(MockPiState::RECORDING);
+                break;
+            }
+            
+            if (elapsed >= MOCK_PI_IDLE_THRESHOLD_MS && m_recordedCount > 0) {
+                logf("MockPi: Recording complete, %d positions. Starting playback.", m_recordedCount);
+                buildSequenceFromRecording();
+                m_currentStep = 0;
+                m_stepTouchedMask = 0;
+                transitionTo(MockPiState::STEP_SHOW);
+            }
+            break;
+        }
+        
+        case MockPiState::PLAYBACK:
+            // Handled via the sequence states
+            break;
+    }
+}
+
+void MockPiPrograms::processEvent(const char* eventType, char position, uint32_t cmdId) {
+    (void)cmdId; // May use later for ACK tracking
+    
+    // Handle touch events from event line parsing (backup to direct polling)
+    if (strcmp(eventType, "TOUCHED") == 0 || strcmp(eventType, "TOUCH_DOWN") == 0) {
+        // Only process if we don't have a TouchController (direct polling is preferred)
+        if (!m_touchController) {
+            onTouchDown(position);
+        }
+    }
+    else if (strcmp(eventType, "TOUCH_RELEASED") == 0 || strcmp(eventType, "TOUCH_UP") == 0) {
+        if (!m_touchController) {
+            onTouchUp(position);
+        }
+    }
+    else if (strcmp(eventType, "ACK") == 0) {
+        // ACK received - could track pending commands
+        if (m_pendingCommands > 0) {
+            m_pendingCommands--;
+        }
+    }
+    else if (strcmp(eventType, "ERR") == 0) {
+        log("MockPi: Error received for command");
+    }
+    else if (strcmp(eventType, "DONE") == 0) {
+        // Long-running command completed
+    }
+}
+
+// ============================================================================
+// Private Methods - Helpers
+// ============================================================================
+
+uint32_t MockPiPrograms::posToBit(char pos) {
+    if (pos >= 'A' && pos <= 'Y') {
+        return 1UL << (pos - 'A');
+    }
+    if (pos >= 'a' && pos <= 'y') {
+        return 1UL << (pos - 'a');
+    }
+    return 0;
+}
+
+char MockPiPrograms::indexToLetter(uint8_t index) {
+    if (index < NUM_TOUCH_SENSORS) {
+        return 'A' + index;
+    }
+    return '?';
+}
+
+bool MockPiPrograms::allStepPositionsTouched() const {
+    if (m_currentStep >= m_stepCount) return false;
+    
+    const SequenceStep& step = m_steps[m_currentStep];
+    uint32_t requiredMask = 0;
+    for (uint8_t i = 0; i < step.positionCount; i++) {
+        requiredMask |= posToBit(step.positions[i]);
+    }
+    
+    return (m_stepTouchedMask & requiredMask) == requiredMask;
+}
+
+bool MockPiPrograms::allStepPositionsReleased() const {
+    if (m_currentStep >= m_stepCount) return true;
+    
+    const SequenceStep& step = m_steps[m_currentStep];
+    for (uint8_t i = 0; i < step.positionCount; i++) {
+        if (m_currentlyTouched & posToBit(step.positions[i])) {
+            return false; // Still touched
+        }
+    }
+    return true;
+}
+
+SequenceStep& MockPiPrograms::currentStepData() {
+    static SequenceStep dummy;
+    if (m_currentStep < m_stepCount) {
+        return m_steps[m_currentStep];
+    }
+    return dummy;
+}
+
+void MockPiPrograms::transitionTo(MockPiState newState) {
+    m_state = newState;
+    m_stateStartTime = millis();
+}
+
+void MockPiPrograms::buildSequenceFromRecording() {
+    // Convert recorded positions to simple steps
+    m_stepCount = 0;
+    for (uint8_t i = 0; i < m_recordedCount && m_stepCount < MAX_SEQUENCE_LENGTH; i++) {
+        m_steps[m_stepCount].type = StepType::SINGLE;
+        m_steps[m_stepCount].positionCount = 1;
+        m_steps[m_stepCount].positions[0] = m_recordedSequence[i];
+        m_steps[m_stepCount].touchedMask = 0;
+        m_steps[m_stepCount].firstTouchTime = 0;
+        m_stepCount++;
+    }
+}
+
+void MockPiPrograms::log(const char* msg) {
+    if (m_verbose) {
+        Serial.println(msg);
+    }
+}
+
+void MockPiPrograms::logf(const char* fmt, ...) {
+    if (!m_verbose) return;
+    
+    char buf[80];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    Serial.println(buf);
+}

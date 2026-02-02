@@ -35,7 +35,7 @@ struct TouchSensorState {
 };
 
 // ============================================================================
-// Expectation State (for EXPECT_DOWN/EXPECT_UP)
+// Expectation State (for EXPECT/EXPECT_RELEASE)
 // ============================================================================
 
 struct ExpectState {
@@ -88,14 +88,14 @@ public:
     /**
      * @brief Set expectation for touch down at position
      * @param sensorIndex Sensor index (0-24)
-     * @param commandId Command ID to include in TOUCHED_DOWN response
+     * @param commandId Command ID to include in TOUCHED response
      */
     void setExpectDown(uint8_t sensorIndex, uint32_t commandId);
 
     /**
      * @brief Set expectation for touch up at position
      * @param sensorIndex Sensor index (0-24)
-     * @param commandId Command ID to include in TOUCHED_UP response
+     * @param commandId Command ID to include in TOUCH_RELEASED response
      */
     void setExpectUp(uint8_t sensorIndex, uint32_t commandId);
 
@@ -168,7 +168,7 @@ private:
     // Per-sensor state
     TouchSensorState m_sensors[NUM_TOUCH_SENSORS];
 
-    // Expectation tracking for EXPECT_DOWN/EXPECT_UP commands
+    // Expectation tracking for EXPECT/EXPECT_RELEASE commands
     ExpectState m_expectDown[NUM_TOUCH_SENSORS];
     ExpectState m_expectUp[NUM_TOUCH_SENSORS];
 

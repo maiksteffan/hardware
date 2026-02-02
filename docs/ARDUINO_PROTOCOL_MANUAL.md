@@ -67,8 +67,8 @@ SUCCESS C #1003
 
 | Command | Syntax | Description | Response |
 |---------|--------|-------------|----------|
-| `EXPECT_DOWN` | `EXPECT_DOWN <pos> [#id]` | Wait for touch at position | `ACK ...` then `TOUCHED_DOWN <pos> [#id]` when touched |
-| `EXPECT_UP` | `EXPECT_UP <pos> [#id]` | Wait for release at position | `ACK ...` then `TOUCHED_UP <pos> [#id]` when released |
+| `EXPECT` | `EXPECT <pos> [#id]` | Wait for touch at position | `ACK ...` then `TOUCHED <pos> [#id]` when touched |
+| `EXPECT_RELEASE` | `EXPECT_RELEASE <pos> [#id]` | Wait for release at position | `ACK ...` then `TOUCH_RELEASED <pos> [#id]` when released |
 | `RECALIBRATE` | `RECALIBRATE <pos> [#id]` | Recalibrate single sensor | `ACK ...` then `RECALIBRATED <pos> [#id]` |
 | `RECALIBRATE_ALL` | `RECALIBRATE_ALL [#id]` | Recalibrate all sensors | `ACK ...` then `RECALIBRATED ALL [#id]` |
 
@@ -96,8 +96,8 @@ EVENT_TYPE [action] [position] [#command_id]
 |-------|--------|-------------|
 | `ACK` | `ACK <action> <pos> [#id]` | Command acknowledged |
 | `DONE` | `DONE <action> <pos> [#id]` | Long-running command completed |
-| `TOUCHED_DOWN` | `TOUCHED_DOWN <pos> [#id]` | Touch detected (after EXPECT_DOWN) |
-| `TOUCHED_UP` | `TOUCHED_UP <pos> [#id]` | Release detected (after EXPECT_UP) |
+| `TOUCHED` | `TOUCHED <pos> [#id]` | Touch detected (after EXPECT) |
+| `TOUCH_RELEASED` | `TOUCH_RELEASED <pos> [#id]` | Release detected (after EXPECT_RELEASE) |
 | `ERR` | `ERR <reason> [#id]` | Error occurred |
 
 ### Error Reasons
@@ -153,8 +153,8 @@ Show LED → Wait for touch → Success animation → Hide
 ```python
 async def simple_step(self, position: str):
     await self.send(f"SHOW {position}")
-    await self.send(f"EXPECT_DOWN {position}")
-    await self.wait_for_event("TOUCHED_DOWN", position)
+    await self.send(f"EXPECT {position}")
+    await self.wait_for_event("TOUCHED", position)
     await self.send(f"SUCCESS {position}")
     await self.wait_for_event("DONE", "SUCCESS", position)
     await self.send(f"HIDE {position}")
@@ -179,7 +179,7 @@ Multiple positions must be touched within a time window.
 async def simultaneous_step(self, positions: list[str], window_ms: int = 500):
     for pos in positions:
         await self.send(f"SHOW {pos}")
-        await self.send(f"EXPECT_DOWN {pos}")
+        await self.send(f"EXPECT {pos}")
     
     touched = set()
     start_time = time.time()
@@ -188,7 +188,7 @@ async def simultaneous_step(self, positions: list[str], window_ms: int = 500):
         if (time.time() - start_time) * 1000 > window_ms:
             raise TimeoutError("Simultaneous touch window expired")
         
-        event = await self.wait_for_any_event("TOUCHED_DOWN")
+        event = await self.wait_for_any_event("TOUCHED")
         touched.add(event.position)
     
     # All touched within window - success!
@@ -228,7 +228,7 @@ import queue
 
 @dataclass
 class ArduinoEvent:
-    event_type: str      # ACK, DONE, TOUCHED_DOWN, TOUCHED_UP, ERR, etc.
+    event_type: str      # ACK, DONE, TOUCHED, TOUCH_RELEASED, ERR, etc.
     action: Optional[str] = None
     position: Optional[str] = None
     command_id: Optional[int] = None
@@ -296,7 +296,7 @@ class ArduinoInterface:
                     pass
         
         # Parse based on event type
-        if event.event_type in ("TOUCHED_DOWN", "TOUCHED_UP"):
+        if event.event_type in ("TOUCHED", "TOUCH_RELEASED"):
             if len(parts) >= 2 and parts[1].isalpha() and len(parts[1]) == 1:
                 event.position = parts[1].upper()
         
@@ -371,7 +371,7 @@ class SequenceController:
                 future.set_result(event)
         
         # Queue touch events
-        if event.event_type in ("TOUCHED_DOWN", "TOUCHED_UP"):
+        if event.event_type in ("TOUCHED", "TOUCH_RELEASED"):
             asyncio.get_event_loop().call_soon_threadsafe(
                 self._touch_events.put_nowait, event
             )
@@ -441,26 +441,26 @@ class SequenceController:
     # =========================================================================
     
     async def expect_touch(self, position: str):
-        """Register to receive TOUCHED_DOWN event for position."""
-        await self.send(f"EXPECT_DOWN {position}")
+        """Register to receive TOUCHED event for position."""
+        await self.send(f"EXPECT {position}")
     
     async def expect_release(self, position: str):
-        """Register to receive TOUCHED_UP event for position."""
-        await self.send(f"EXPECT_UP {position}")
+        """Register to receive TOUCH_RELEASED event for position."""
+        await self.send(f"EXPECT_RELEASE {position}")
     
     async def wait_for_touch(self, position: str, timeout: float = None) -> ArduinoEvent:
         """
         Wait for touch at specific position.
         Must call expect_touch() first!
         """
-        return await self._wait_for_touch_event("TOUCHED_DOWN", position, timeout)
+        return await self._wait_for_touch_event("TOUCHED", position, timeout)
     
     async def wait_for_release(self, position: str, timeout: float = None) -> ArduinoEvent:
         """
         Wait for release at specific position.
         Must call expect_release() first!
         """
-        return await self._wait_for_touch_event("TOUCHED_UP", position, timeout)
+        return await self._wait_for_touch_event("TOUCH_RELEASED", position, timeout)
     
     async def _wait_for_touch_event(
         self, 
@@ -908,14 +908,14 @@ STOP_BLINK B
 │   SEQUENCE_COMPLETED → Celebration animation                     │
 ├─────────────────────────────────────────────────────────────────┤
 │ Touch Control:                                                   │
-│   EXPECT_DOWN <pos> → Arm touch detection                       │
-│   EXPECT_UP <pos>   → Arm release detection                     │
+│   EXPECT <pos>      → Arm touch detection                       │
+│   EXPECT_RELEASE <pos> → Arm release detection                  │
 ├─────────────────────────────────────────────────────────────────┤
 │ Events from Arduino:                                             │
 │   ACK <cmd> <pos>   → Command acknowledged                      │
 │   DONE <cmd> <pos>  → Animation complete                        │
-│   TOUCHED_DOWN <pos>→ Touch detected                            │
-│   TOUCHED_UP <pos>  → Release detected                          │
+│   TOUCHED <pos>     → Touch detected                            │
+│   TOUCH_RELEASED <pos> → Release detected                       │
 │   ERR <reason>      → Error occurred                            │
 ├─────────────────────────────────────────────────────────────────┤
 │ Positions: A B C D E F G H I J K L M N O P Q R S T U V W X Y   │

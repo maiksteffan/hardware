@@ -47,11 +47,8 @@ bool TouchController::begin() {
     Wire.begin();
     Wire.setClock(I2C_CLOCK_SPEED);
     
-    // Small delay after I2C init
+    // Allow I2C to stabilize
     delay(100);
-    
-    // Try to recover I2C bus if stuck
-    recoverI2CBus();
     
     m_activeSensorCount = 0;
     
@@ -71,6 +68,9 @@ bool TouchController::begin() {
         m_sensors[i].debouncedTouched = false;
         m_sensors[i].lastReportedTouched = false;
         m_sensors[i].lastChangeTime = 0;
+        
+        // Small delay between sensor inits
+        delay(10);
     }
     
     return m_activeSensorCount > 0;
@@ -236,27 +236,30 @@ bool TouchController::initSensor(uint8_t address) {
         return false;
     }
     
-    // Enable only CS1 input (bit 0)
+    delay(10);
+    
+    // Verify this is a CAP1188 (check product ID = 0x50)
+    uint8_t prodId;
+    if (!readRegister(address, CAP1188_REG_PRODUCT_ID, prodId) || prodId != 0x50) {
+        return false;
+    }
+    
+    // ===== SIMPLE ADAFRUIT-STYLE CONFIGURATION =====
+    // Only set the 3 registers that Adafruit sets, nothing more
+    
+    // Allow multiple touches (MTBLK = 0)
+    if (!writeRegister(address, CAP1188_REG_MULTIPLE_TOUCH_CONFIG, 0x00)) {
+        return false;
+    }
+    
+    // Speed up cycle time (Adafruit uses 0x30)
+    if (!writeRegister(address, CAP1188_REG_STANDBY_CONFIG, 0x30)) {
+        return false;
+    }
+    
+    // Enable only CS1 input (we only use channel 1)
     if (!writeRegister(address, CAP1188_REG_SENSOR_INPUT_ENABLE, CS1_BIT_MASK)) {
         return false;
-    }
-    
-    // Set default sensitivity
-    // Sensitivity register 0x1F: bits 6:4 = sensitivity (0-7)
-    uint8_t sensitivityValue = 0x20 | (DEFAULT_SENSITIVITY << 4);
-    if (!writeRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, sensitivityValue)) {
-        return false;
-    }
-    
-    // Clear any pending interrupts
-    uint8_t dummy;
-    readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, dummy);
-    
-    // Clear interrupt flag in main control register
-    uint8_t mainControl;
-    if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
-        mainControl &= ~0x01;  // Clear INT bit
-        writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
     }
     
     return true;
@@ -265,28 +268,22 @@ bool TouchController::initSensor(uint8_t address) {
 bool TouchController::readRegister(uint8_t address, uint8_t reg, uint8_t& value) {
     Wire.beginTransmission(address);
     Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) {
-        delayMicroseconds(50);
+    if (Wire.endTransmission() != 0) {
         return false;
     }
     
-    delayMicroseconds(50);
-    
-    if (Wire.requestFrom(address, (uint8_t)1) != 1) {
-        return false;
+    if (Wire.requestFrom(address, (uint8_t)1) == 1) {
+        value = Wire.read();
+        return true;
     }
-    
-    value = Wire.read();
-    return true;
+    return false;
 }
 
 bool TouchController::writeRegister(uint8_t address, uint8_t reg, uint8_t value) {
     Wire.beginTransmission(address);
     Wire.write(reg);
     Wire.write(value);
-    uint8_t result = Wire.endTransmission();
-    delayMicroseconds(50);
-    return result == 0;
+    return Wire.endTransmission() == 0;
 }
 
 bool TouchController::readRawTouch(uint8_t address) {
@@ -294,18 +291,18 @@ bool TouchController::readRawTouch(uint8_t address) {
     
     // Read sensor input status register
     if (!readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, status)) {
-        return false;
+        return false;  // Assume not touched on I2C error
     }
     
     // Check if CS1 is touched (bit 0)
     bool touched = (status & CS1_BIT_MASK) != 0;
     
+    // Only clear interrupt if touched (matches Adafruit library behavior)
+    // This is correct for polling without interrupt pin
     if (touched) {
-        // Clear the interrupt flag
         uint8_t mainControl;
         if (readRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl)) {
-            mainControl &= ~0x01;
-            writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl);
+            writeRegister(address, CAP1188_REG_MAIN_CONTROL, mainControl & ~0x01);
         }
     }
     
@@ -390,8 +387,8 @@ void TouchController::processDebounce() {
                             // Touch down detected
                             // Check if we have an expectation for this
                             if (m_expectDown[i].active) {
-                                // Expected touch - emit TOUCHED_DOWN with command ID
-                                m_eventQueue->queueTouchedDown(letter, m_expectDown[i].commandId);
+                                // Expected touch - emit TOUCHED with command ID
+                                m_eventQueue->queueTouched(letter, m_expectDown[i].commandId);
                                 // Clear the expectation (one-shot)
                                 m_expectDown[i].active = false;
                                 m_expectDown[i].commandId = NO_COMMAND_ID;
@@ -403,8 +400,8 @@ void TouchController::processDebounce() {
                             // Touch up detected
                             // Check if we have an expectation for this
                             if (m_expectUp[i].active) {
-                                // Expected release - emit TOUCHED_UP with command ID
-                                m_eventQueue->queueTouchedUp(letter, m_expectUp[i].commandId);
+                                // Expected release - emit TOUCH_RELEASED with command ID
+                                m_eventQueue->queueTouchReleased(letter, m_expectUp[i].commandId);
                                 // Clear the expectation (one-shot)
                                 m_expectUp[i].active = false;
                                 m_expectUp[i].commandId = NO_COMMAND_ID;

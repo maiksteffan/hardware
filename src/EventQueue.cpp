@@ -168,9 +168,9 @@ bool EventQueue::queueScanned(const char* sensorList, uint32_t commandId) {
     return enqueue(event);
 }
 
-bool EventQueue::queueTouchedDown(char position, uint32_t commandId) {
+bool EventQueue::queueTouched(char position, uint32_t commandId) {
     Event event;
-    event.type = EventType::TOUCHED_DOWN;
+    event.type = EventType::TOUCHED;
     event.action[0] = '\0';
     event.position = position;
     event.commandId = commandId;
@@ -180,9 +180,9 @@ bool EventQueue::queueTouchedDown(char position, uint32_t commandId) {
     return enqueue(event);
 }
 
-bool EventQueue::queueTouchedUp(char position, uint32_t commandId) {
+bool EventQueue::queueTouchReleased(char position, uint32_t commandId) {
     Event event;
-    event.type = EventType::TOUCHED_UP;
+    event.type = EventType::TOUCH_RELEASED;
     event.action[0] = '\0';
     event.position = position;
     event.commandId = commandId;
@@ -268,4 +268,94 @@ void EventQueue::sendEvent(const Event& event) {
         case EventType::ERR:
             Serial.print("ERR ");
             Serial.print(event.extra);
-            if (event.commandId != NO
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::TOUCH_DOWN:
+            Serial.print("TOUCH_DOWN ");
+            Serial.println(event.position);
+            break;
+            
+        case EventType::TOUCH_UP:
+            Serial.print("TOUCH_UP ");
+            Serial.println(event.position);
+            break;
+            
+        case EventType::TOUCHED:
+            Serial.print("TOUCHED ");
+            Serial.print(event.position);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::TOUCH_RELEASED:
+            Serial.print("TOUCH_RELEASED ");
+            Serial.print(event.position);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::SCANNED:
+            // Output format: SCANNED[A,B,C] #id
+            Serial.print("SCANNED[");
+            Serial.print(event.extra);
+            Serial.print("]");
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::RECALIBRATED:
+            Serial.print("RECALIBRATED ");
+            if (event.position == 0) {
+                Serial.print("ALL");
+            } else {
+                Serial.print(event.position);
+            }
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::SCAN_RESULT:
+            Serial.print("SCAN_RESULT addr=");
+            Serial.println(event.extra);
+            break;
+            
+        case EventType::SCAN_DONE:
+            Serial.println("SCAN_DONE");
+            break;
+            
+        case EventType::INFO:
+            Serial.print("INFO version=");
+            Serial.print(FIRMWARE_VERSION);
+            Serial.print(" protocol=");
+            Serial.print(PROTOCOL_VERSION);
+            Serial.print(" positions=A-Y leds=");
+            Serial.print(NUM_LEDS_STRIP1);
+            Serial.print("+");
+            Serial.print(NUM_LEDS_STRIP2);
+            Serial.print(" sensors=");
+            Serial.print(NUM_TOUCH_SENSORS);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+    }
+}

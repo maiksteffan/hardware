@@ -87,10 +87,10 @@ enum class MockPiState : uint8_t {
     
     // Sequence states
     STEP_SHOW,                // Sending SHOW commands for current step
-    STEP_EXPECT_DOWN,         // Sending EXPECT_DOWN commands
+    STEP_EXPECT,              // Sending EXPECT commands
     STEP_WAIT_TOUCH,          // Waiting for touch(es)
     STEP_SUCCESS,             // Sending SUCCESS commands
-    STEP_EXPECT_UP,           // Sending EXPECT_UP commands
+    STEP_EXPECT_RELEASE,      // Sending EXPECT_RELEASE commands
     STEP_WAIT_RELEASE,        // Waiting for release(es)
     STEP_HIDE,                // Sending HIDE commands
     STEP_NEXT,                // Moving to next step
@@ -100,11 +100,11 @@ enum class MockPiState : uint8_t {
     // Pattern: SHOW A -> wait touch A -> SUCCESS A -> SHOW B -> wait touch B -> 
     //          SUCCESS B -> BLINK A -> wait release A -> STOP_BLINK A -> HIDE A -> SHOW C -> ...
     TWO_HAND_SHOW,            // Show current position
-    TWO_HAND_EXPECT_DOWN,     // Expect down on current position
+    TWO_HAND_EXPECT,          // Expect on current position
     TWO_HAND_WAIT_TOUCH,      // Wait for touch on current position
     TWO_HAND_SUCCESS,         // Success on current position
     TWO_HAND_BLINK_OLD,       // Start blinking position N-1 after touching N+1
-    TWO_HAND_EXPECT_UP_OLD,   // Expect up on the blinking position
+    TWO_HAND_EXPECT_RELEASE_OLD, // Expect release on the blinking position
     TWO_HAND_WAIT_RELEASE,    // Wait for release of blinking position
     TWO_HAND_STOP_BLINK_HIDE, // Stop blink and hide the released position, show next
     TWO_HAND_NEXT,            // Move to next position
@@ -149,7 +149,7 @@ public:
     /**
      * @brief Feed an event line to the mock Pi for parsing
      * Call this when the Arduino outputs a line (from EventQueue)
-     * @param line The event line (e.g., "TOUCHED_DOWN A", "ACK SHOW A")
+     * @param line The event line (e.g., "TOUCHED A", "ACK SHOW A")
      */
     void feedEventLine(const char* line);
     
@@ -248,4 +248,85 @@ private:
     // === Internal Methods ===
     
     /**
-     * @brief Poll touch controller 
+     * @brief Poll touch controller and detect edges
+     */
+    void pollTouchState();
+    
+    /**
+     * @brief Send a command (via CommandController::injectCommand or Serial)
+     */
+    void sendCommand(const char* cmd);
+    
+    /**
+     * @brief Send a command with position and auto-generated ID
+     */
+    void sendCommandWithPos(const char* action, char pos);
+    
+    /**
+     * @brief Parse sequence specification for simultaneous mode
+     */
+    bool parseSimultaneousSpec(const char* spec);
+    
+    /**
+     * @brief Handle state machine updates
+     */
+    void updateStateMachine();
+    
+    /**
+     * @brief Process a touch down event
+     */
+    void onTouchDown(char position);
+    
+    /**
+     * @brief Process a touch up event
+     */
+    void onTouchUp(char position);
+    
+    /**
+     * @brief Process a parsed event line
+     */
+    void processEvent(const char* eventType, char position, uint32_t cmdId);
+    
+    /**
+     * @brief Convert position letter to bitmask
+     */
+    static uint32_t posToBit(char pos);
+    
+    /**
+     * @brief Convert position index to letter
+     */
+    static char indexToLetter(uint8_t index);
+    
+    /**
+     * @brief Check if all positions in current step are touched
+     */
+    bool allStepPositionsTouched() const;
+    
+    /**
+     * @brief Check if all positions in current step are released
+     */
+    bool allStepPositionsReleased() const;
+    
+    /**
+     * @brief Get current step
+     */
+    SequenceStep& currentStepData();
+    
+    /**
+     * @brief Move to next state
+     */
+    void transitionTo(MockPiState newState);
+    
+    /**
+     * @brief Log a message if verbose mode is on
+     */
+    void log(const char* msg);
+    void logf(const char* fmt, ...);
+    
+    /**
+     * @brief Build sequence from recorded touches
+     */
+    void buildSequenceFromRecording();
+};
+
+#endif // MOCK_PI_PROGRAMS_H
