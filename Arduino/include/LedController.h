@@ -29,6 +29,7 @@ enum class PositionState : uint8_t {
     SHOWN,
     ANIMATING,
     EXPANDED,
+    CONTRACTING,
     BLINKING
 };
 
@@ -54,6 +55,8 @@ public:
     bool show(uint8_t position);
     bool hide(uint8_t position);
     bool success(uint8_t position);
+    bool fail(uint8_t position);
+    bool contract(uint8_t position);
     bool blink(uint8_t position);
     bool stopBlink(uint8_t position);
     
@@ -63,6 +66,7 @@ public:
     
     // State queries
     bool isAnimationComplete(uint8_t position) const;
+    bool isContractComplete(uint8_t position) const;
     bool isBlinking(uint8_t position) const;
     
     // Utilities
@@ -86,6 +90,7 @@ private:
     void setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b);
     void clearExpandedRegion(uint8_t position, const LedMapping* mapping);
     void updateAnimation(uint8_t position, uint32_t nowMillis);
+    void updateContractAnimation(uint8_t position, uint32_t nowMillis);
     void updateBlinking(uint32_t nowMillis);
     void updateSequenceCompletedAnimation(uint32_t nowMillis);
 };

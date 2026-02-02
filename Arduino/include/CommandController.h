@@ -8,6 +8,8 @@
  *   SHOW <pos> [#id]              - Turn on LED (blue)
  *   HIDE <pos> [#id]              - Turn off LED
  *   SUCCESS <pos> [#id]           - Play green expansion animation
+ *   FAIL <pos> [#id]              - Show red LED (error indicator)
+ *   CONTRACT <pos> [#id]          - Contract expanded LED back to single
  *   BLINK <pos> [#id]             - Start blinking (orange, fast)
  *   STOP_BLINK <pos> [#id]        - Stop blinking
  *   SEQUENCE_COMPLETED [#id]      - Play celebration animation
@@ -43,6 +45,8 @@ enum class CommandAction : uint8_t {
     SHOW,
     HIDE,
     SUCCESS,
+    FAIL,
+    CONTRACT,
     BLINK,
     STOP_BLINK,
     EXPECT,
@@ -105,6 +109,7 @@ private:
     char m_rxBuffer[MAX_LINE_LEN * 2];
     uint8_t m_rxHead;
     uint8_t m_rxTail;
+    uint32_t m_lastRxTime;
     
     // Line buffer for parsing
     char m_lineBuffer[MAX_LINE_LEN];

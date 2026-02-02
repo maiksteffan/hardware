@@ -71,7 +71,7 @@ void setup() {
 // ============================================================================
 
 void loop() {
-    // 1. Poll serial for incoming commands
+    // 1. Poll serial for incoming commands from Raspberry Pi
     commandController.pollSerial();
     
     // 2. Process complete command lines

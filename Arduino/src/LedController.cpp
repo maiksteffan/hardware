@@ -92,6 +92,8 @@ void LedController::update(uint32_t nowMillis) {
     for (uint8_t i = 0; i < NUM_POSITIONS; i++) {
         if (m_positions[i].state == PositionState::ANIMATING) {
             updateAnimation(i, nowMillis);
+        } else if (m_positions[i].state == PositionState::CONTRACTING) {
+            updateContractAnimation(i, nowMillis);
         }
     }
     
@@ -167,6 +169,49 @@ bool LedController::success(uint8_t position) {
     return true;
 }
 
+bool LedController::fail(uint8_t position) {
+    if (position >= NUM_POSITIONS) return false;
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) return false;
+    
+    if (m_positions[position].state == PositionState::ANIMATING ||
+        m_positions[position].state == PositionState::EXPANDED) {
+        clearExpandedRegion(position, mapping);
+    }
+    
+    m_positions[position].state = PositionState::SHOWN;
+    m_positions[position].animationStep = 0;
+    
+    setLed(mapping->strip, mapping->index, COLOR_FAIL_R, COLOR_FAIL_G, COLOR_FAIL_B);
+    m_needsUpdate = true;
+    
+    return true;
+}
+
+bool LedController::contract(uint8_t position) {
+    if (position >= NUM_POSITIONS) return false;
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) return false;
+    
+    // Only contract if expanded or animating (expanding)
+    if (m_positions[position].state == PositionState::EXPANDED ||
+        m_positions[position].state == PositionState::ANIMATING) {
+        // Start from full expansion radius
+        m_positions[position].state = PositionState::CONTRACTING;
+        m_positions[position].animationStep = SUCCESS_EXPANSION_RADIUS;
+        m_positions[position].lastAnimationTime = millis();
+    } else {
+        // If not expanded, just ensure it's shown as a single green LED
+        m_positions[position].state = PositionState::SHOWN;
+        setLed(mapping->strip, mapping->index, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+    }
+    
+    m_needsUpdate = true;
+    return true;
+}
+
 bool LedController::blink(uint8_t position) {
     if (position >= NUM_POSITIONS) return false;
     
@@ -226,6 +271,11 @@ bool LedController::isSequenceCompletedAnimationComplete() const {
 bool LedController::isAnimationComplete(uint8_t position) const {
     if (position >= NUM_POSITIONS) return true;
     return m_positions[position].state != PositionState::ANIMATING;
+}
+
+bool LedController::isContractComplete(uint8_t position) const {
+    if (position >= NUM_POSITIONS) return true;
+    return m_positions[position].state != PositionState::CONTRACTING;
 }
 
 bool LedController::isBlinking(uint8_t position) const {
@@ -317,6 +367,43 @@ void LedController::updateAnimation(uint8_t position, uint32_t nowMillis) {
         if (rightIdx < (int16_t)stripLen) {
             setLed(mapping->strip, rightIdx, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
         }
+    }
+    
+    m_needsUpdate = true;
+}
+
+void LedController::updateContractAnimation(uint8_t position, uint32_t nowMillis) {
+    PositionData& data = m_positions[position];
+    
+    if (nowMillis - data.lastAnimationTime < ANIMATION_STEP_MS) return;
+    
+    const LedMapping* mapping = getMapping(position);
+    if (!mapping) return;
+    
+    data.lastAnimationTime = nowMillis;
+    
+    uint16_t stripLen = getStripLength(mapping->strip);
+    int16_t center = mapping->index;
+    
+    // Turn off the outermost LEDs at current radius
+    if (data.animationStep > 0) {
+        int16_t leftIdx = center - data.animationStep;
+        if (leftIdx >= 0) {
+            setLed(mapping->strip, leftIdx, COLOR_OFF_R, COLOR_OFF_G, COLOR_OFF_B);
+        }
+        int16_t rightIdx = center + data.animationStep;
+        if (rightIdx < (int16_t)stripLen) {
+            setLed(mapping->strip, rightIdx, COLOR_OFF_R, COLOR_OFF_G, COLOR_OFF_B);
+        }
+        data.animationStep--;
+    }
+    
+    // Keep center LED green
+    setLed(mapping->strip, center, COLOR_SUCCESS_R, COLOR_SUCCESS_G, COLOR_SUCCESS_B);
+    
+    // Check if contraction is complete
+    if (data.animationStep == 0) {
+        data.state = PositionState::SHOWN;
     }
     
     m_needsUpdate = true;

@@ -23,6 +23,7 @@ CommandController::CommandController(LedController& ledController,
     , m_eventQueue(eventQueue)
     , m_rxHead(0)
     , m_rxTail(0)
+    , m_lastRxTime(0)
     , m_lineIndex(0)
     , m_lineOverflow(false)
 {
@@ -41,6 +42,7 @@ CommandController::CommandController(LedController& ledController,
 void CommandController::begin() {
     m_rxHead = 0;
     m_rxTail = 0;
+    m_lastRxTime = 0;
     m_lineIndex = 0;
     m_lineOverflow = false;
     
@@ -52,6 +54,7 @@ void CommandController::begin() {
 void CommandController::pollSerial() {
     while (Serial.available() > 0) {
         char c = Serial.read();
+        m_lastRxTime = millis();
         
         // Store in ring buffer
         uint8_t nextHead = (m_rxHead + 1) % sizeof(m_rxBuffer);
@@ -119,6 +122,15 @@ bool CommandController::extractLine() {
         } else {
             m_lineOverflow = true;
         }
+    }
+    
+    // Timeout-based line completion for terminals that don't send line endings
+    // If we have data in the line buffer and no new data for 50ms, treat as complete
+    if (m_lineIndex > 0 && (millis() - m_lastRxTime) > 50) {
+        m_lineBuffer[m_lineIndex] = '\0';
+        m_lineIndex = 0;
+        m_lineOverflow = false;
+        return true;
     }
     
     return false;
@@ -191,6 +203,8 @@ CommandAction CommandController::parseAction(const char* str, size_t len) {
     if (strcasecmpN(str, "SHOW", len)) return CommandAction::SHOW;
     if (strcasecmpN(str, "HIDE", len)) return CommandAction::HIDE;
     if (strcasecmpN(str, "SUCCESS", len)) return CommandAction::SUCCESS;
+    if (strcasecmpN(str, "FAIL", len)) return CommandAction::FAIL;
+    if (strcasecmpN(str, "CONTRACT", len)) return CommandAction::CONTRACT;
     if (strcasecmpN(str, "BLINK", len)) return CommandAction::BLINK;
     if (strcasecmpN(str, "STOP_BLINK", len)) return CommandAction::STOP_BLINK;
     if (strcasecmpN(str, "EXPECT", len)) return CommandAction::EXPECT;
@@ -209,6 +223,8 @@ const char* CommandController::actionToString(CommandAction action) {
         case CommandAction::SHOW: return "SHOW";
         case CommandAction::HIDE: return "HIDE";
         case CommandAction::SUCCESS: return "SUCCESS";
+        case CommandAction::FAIL: return "FAIL";
+        case CommandAction::CONTRACT: return "CONTRACT";
         case CommandAction::BLINK: return "BLINK";
         case CommandAction::STOP_BLINK: return "STOP_BLINK";
         case CommandAction::EXPECT: return "EXPECT";
@@ -228,6 +244,8 @@ bool CommandController::actionRequiresPosition(CommandAction action) {
         case CommandAction::SHOW:
         case CommandAction::HIDE:
         case CommandAction::SUCCESS:
+        case CommandAction::FAIL:
+        case CommandAction::CONTRACT:
         case CommandAction::BLINK:
         case CommandAction::STOP_BLINK:
         case CommandAction::EXPECT:
@@ -242,6 +260,7 @@ bool CommandController::actionRequiresPosition(CommandAction action) {
 bool CommandController::actionIsLongRunning(CommandAction action) {
     switch (action) {
         case CommandAction::SUCCESS:
+        case CommandAction::CONTRACT:
         case CommandAction::SEQUENCE_COMPLETED:
             return true;
         default:
@@ -283,6 +302,14 @@ void CommandController::executeInstant(const ParsedCommand& cmd) {
             
         case CommandAction::HIDE:
             if (m_ledController.hide(cmd.positionIndex)) {
+                m_eventQueue.queueAck(actionStr, cmd.position, cmdId);
+            } else {
+                m_eventQueue.queueError("command_failed", cmdId);
+            }
+            break;
+            
+        case CommandAction::FAIL:
+            if (m_ledController.fail(cmd.positionIndex)) {
                 m_eventQueue.queueAck(actionStr, cmd.position, cmdId);
             } else {
                 m_eventQueue.queueError("command_failed", cmdId);
@@ -386,6 +413,8 @@ bool CommandController::queueCommand(const ParsedCommand& cmd) {
             // Start the action
             if (cmd.action == CommandAction::SUCCESS) {
                 m_ledController.success(cmd.positionIndex);
+            } else if (cmd.action == CommandAction::CONTRACT) {
+                m_ledController.contract(cmd.positionIndex);
             } else if (cmd.action == CommandAction::SEQUENCE_COMPLETED) {
                 m_ledController.startSequenceCompletedAnimation();
             }
@@ -404,6 +433,14 @@ void CommandController::tickCommand(QueuedCommand& qc) {
     switch (qc.command.action) {
         case CommandAction::SUCCESS:
             if (m_ledController.isAnimationComplete(qc.command.positionIndex)) {
+                m_eventQueue.queueDone(actionToString(qc.command.action), 
+                                       qc.command.position, cmdId);
+                qc.active = false;
+            }
+            break;
+            
+        case CommandAction::CONTRACT:
+            if (m_ledController.isContractComplete(qc.command.positionIndex)) {
                 m_eventQueue.queueDone(actionToString(qc.command.action), 
                                        qc.command.position, cmdId);
                 qc.active = false;

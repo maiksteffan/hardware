@@ -23,6 +23,8 @@ This document describes the serial protocol for communicating with the Arduino L
 | SHOW | `SHOW <pos> [#id]` | `ACK SHOW <pos> [#id]` | Light LED blue at position |
 | HIDE | `HIDE <pos> [#id]` | `ACK HIDE <pos> [#id]` | Turn off LED |
 | SUCCESS | `SUCCESS <pos> [#id]` | `ACK SUCCESS <pos> [#id]` then `DONE SUCCESS <pos> [#id]` | Play green expansion animation |
+| FAIL | `FAIL <pos> [#id]` | `ACK FAIL <pos> [#id]` | Show red LED (error indicator) |
+| CONTRACT | `CONTRACT <pos> [#id]` | `ACK CONTRACT <pos> [#id]` then `DONE CONTRACT <pos> [#id]` | Animate contraction back to single green LED |
 | BLINK | `BLINK <pos> [#id]` | `ACK BLINK <pos> [#id]` | Start fast orange blink ("release me") |
 | STOP_BLINK | `STOP_BLINK <pos> [#id]` | `ACK STOP_BLINK <pos> [#id]` | Stop blinking, turn off LED |
 | SEQUENCE_COMPLETED | `SEQUENCE_COMPLETED [#id]` | `ACK SEQUENCE_COMPLETED [#id]` then `DONE SEQUENCE_COMPLETED [#id]` | Play celebration animation |
@@ -145,12 +147,46 @@ send_cmd(f"EXPECT B #{cmd_id + 3}")
 # The Pi should track timing between touches
 ```
 
+### Error Handling Pattern
+
+For indicating wrong touches:
+
+```python
+# Player touched wrong position
+send_cmd(f"FAIL {wrong_pos} #{cmd_id}")  # Show red LED
+time.sleep(0.5)
+send_cmd(f"HIDE {wrong_pos} #{cmd_id + 1}")  # Turn off
+```
+
+### Contract After Success Pattern
+
+For visual feedback before moving to next position:
+
+```python
+# Player touched correct position
+send_cmd(f"SUCCESS {pos} #{cmd_id}", f"DONE SUCCESS {pos}")  # Expand green
+time.sleep(0.3)  # Let player see the expanded success
+send_cmd(f"CONTRACT {pos} #{cmd_id + 1}", f"DONE CONTRACT {pos}")  # Contract back
+send_cmd(f"HIDE {pos} #{cmd_id + 2}")  # Then hide
+```
+
 ## Timing Considerations
 
 - **Simultaneity Window**: ~500ms tolerance for "simultaneous" touches
 - **Debounce**: 20ms built into touch controller
-- **Animation Duration**: SUCCESS animation ~500ms
+- **Animation Duration**: SUCCESS/CONTRACT animation ~125ms (5 steps × 25ms)
 - **Poll Interval**: Touch sensors polled every 5ms
+- **Blink Interval**: 150ms on/off cycle
+
+## LED Colors
+
+| State | Color | RGB |
+|-------|-------|-----|
+| SHOW | Blue | (0, 0, 255) |
+| SUCCESS/CONTRACT | Green | (0, 255, 0) |
+| FAIL | Red | (255, 0, 0) |
+| BLINK | Orange | (255, 100, 0) |
+| OFF | Black | (0, 0, 0) |
 
 ## Architecture Notes
 

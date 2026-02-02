@@ -80,10 +80,15 @@ constexpr uint8_t COLOR_SUCCESS_R = 0;
 constexpr uint8_t COLOR_SUCCESS_G = 255;
 constexpr uint8_t COLOR_SUCCESS_B = 0;
 
-// BLINK = Orange (fast blink for "release me")
-constexpr uint8_t COLOR_BLINK_R = 255;
-constexpr uint8_t COLOR_BLINK_G = 100;
+// BLINK = Green (fast blink for "release me")
+constexpr uint8_t COLOR_BLINK_R = 0;
+constexpr uint8_t COLOR_BLINK_G = 255;
 constexpr uint8_t COLOR_BLINK_B = 0;
+
+// FAIL = Red
+constexpr uint8_t COLOR_FAIL_R = 255;
+constexpr uint8_t COLOR_FAIL_G = 0;
+constexpr uint8_t COLOR_FAIL_B = 0;
 
 // OFF = Black
 constexpr uint8_t COLOR_OFF_R = 0;
