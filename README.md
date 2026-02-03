@@ -37,6 +37,8 @@ This document describes the serial protocol for communicating with the Arduino L
 | EXPECT_RELEASE | `EXPECT_RELEASE <pos> [#id]` | `ACK EXPECT_RELEASE <pos> [#id]` then `TOUCH_RELEASED <pos> [#id]` | Wait for release at position |
 | RECALIBRATE | `RECALIBRATE <pos> [#id]` | `ACK RECALIBRATE <pos> [#id]` then `RECALIBRATED <pos> [#id]` | Recalibrate sensor |
 | RECALIBRATE_ALL | `RECALIBRATE_ALL [#id]` | `ACK RECALIBRATE_ALL [#id]` then `RECALIBRATED ALL [#id]` | Recalibrate all sensors |
+| VALUE | `VALUE <pos> [#id]` | `VALUE <pos> <delta> [#id]` | Get current sensor delta value (-128 to 127) |
+| SET_SENSITIVITY | `SET_SENSITIVITY <pos> <level>` | `ACK SET_SENSITIVITY <pos> [#id]` | Set sensor sensitivity (0=most, 7=least) |
 
 ### Utility Commands
 
@@ -66,7 +68,9 @@ This document describes the serial protocol for communicating with the Arduino L
 | `bad_format` | Malformed command |
 | `unknown_action` | Unknown command |
 | `unknown_position` | Invalid position (not A-Y) |
+| `invalid_level` | Sensitivity level not 0-7 |
 | `command_failed` | Hardware operation failed |
+| `sensor_inactive` | Sensor not connected/responding |
 | `busy` | Command queue full |
 | `no_touch_controller` | Touch hardware unavailable |
 
@@ -173,10 +177,24 @@ send_cmd(f"HIDE {pos} #{cmd_id + 2}")  # Then hide
 ## Timing Considerations
 
 - **Simultaneity Window**: ~500ms tolerance for "simultaneous" touches
-- **Debounce**: 20ms built into touch controller
+- **Touch Debounce**: 30ms to confirm touch
+- **Release Debounce**: 100ms to confirm release (prevents false releases)
 - **Animation Duration**: SUCCESS/CONTRACT animation ~125ms (5 steps × 25ms)
 - **Poll Interval**: Touch sensors polled every 5ms
 - **Blink Interval**: 150ms on/off cycle
+
+## Sensitivity Levels
+
+| Level | Multiplier | Description |
+|-------|------------|-------------|
+| 0 | 128x | Most sensitive |
+| 1 | 64x | |
+| 2 | 32x | Default |
+| 3 | 16x | |
+| 4 | 8x | |
+| 5 | 4x | |
+| 6 | 2x | |
+| 7 | 1x | Least sensitive |
 
 ## LED Colors
 
@@ -191,4 +209,36 @@ send_cmd(f"HIDE {pos} #{cmd_id + 2}")  # Then hide
 ## Architecture Notes
 
 ```
-┌─────────────�
+┌─────────────┐     Serial      ┌──────────────┐
+│ Raspberry Pi │ ◄──────────────► │   Arduino    │
+│ (Game Logic) │    115200 baud  │ (Hardware)   │
+└─────────────┘                  └──────────────┘
+      │                                │
+      │  Commands ────────────────►    │  LED Control
+      │                                │  Touch Sensing
+      │  ◄──────────────── Responses   │
+      │  ◄──────────────── Events      │
+```
+
+The Arduino handles:
+- LED control (NeoPixel strips)
+- Touch sensor polling (25x CAP1188)
+- Debouncing
+- Animation timing
+
+The Raspberry Pi handles:
+- Game logic and sequences
+- User interface
+- Scoring
+- Timing validation
+
+## Hardware Reference
+
+- **Board**: Arduino UNO R4 WiFi
+- **LED Strips**: 2x 190 LEDs on pins D5, D10
+- **Touch Sensors**: 25x CAP1188 via I2C
+- **Positions**: A-Y mapped to specific LEDs and sensors
+
+---
+
+*Protocol Version: 2.0 | Firmware Version: 2.0.0*
