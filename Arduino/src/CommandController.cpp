@@ -147,6 +147,7 @@ bool CommandController::parseLine(const char* line, ParsedCommand& cmd) {
     cmd.positionIndex = 255;
     cmd.hasId = false;
     cmd.id = NO_COMMAND_ID;
+    cmd.extraValue = 0;
     cmd.valid = false;
     
     const char* p = skipWhitespace(line);
@@ -184,6 +185,28 @@ bool CommandController::parseLine(const char* line, ParsedCommand& cmd) {
         p = skipWhitespace(p + 1);
     }
     
+    // Parse extra numeric value if needed (e.g., sensitivity level)
+    if (cmd.action == CommandAction::SET_SENSITIVITY) {
+        if (*p == '\0' || *p == '#') {
+            m_eventQueue.queueError("bad_format", NO_COMMAND_ID);
+            return false;
+        }
+        
+        uint8_t val = 0;
+        while (*p >= '0' && *p <= '9') {
+            val = val * 10 + (*p - '0');
+            p++;
+        }
+        
+        if (val > 7) {
+            m_eventQueue.queueError("invalid_level", NO_COMMAND_ID);
+            return false;
+        }
+        
+        cmd.extraValue = val;
+        p = skipWhitespace(p);
+    }
+    
     // Parse optional command ID (#number)
     if (*p == '#') {
         p++;
@@ -211,6 +234,8 @@ CommandAction CommandController::parseAction(const char* str, size_t len) {
     if (strcasecmpN(str, "EXPECT_RELEASE", len)) return CommandAction::EXPECT_RELEASE;
     if (strcasecmpN(str, "RECALIBRATE", len)) return CommandAction::RECALIBRATE;
     if (strcasecmpN(str, "RECALIBRATE_ALL", len)) return CommandAction::RECALIBRATE_ALL;
+    if (strcasecmpN(str, "VALUE", len)) return CommandAction::VALUE;
+    if (strcasecmpN(str, "SET_SENSITIVITY", len)) return CommandAction::SET_SENSITIVITY;
     if (strcasecmpN(str, "SCAN", len)) return CommandAction::SCAN;
     if (strcasecmpN(str, "SEQUENCE_COMPLETED", len)) return CommandAction::SEQUENCE_COMPLETED;
     if (strcasecmpN(str, "INFO", len)) return CommandAction::INFO;
@@ -231,6 +256,8 @@ const char* CommandController::actionToString(CommandAction action) {
         case CommandAction::EXPECT_RELEASE: return "EXPECT_RELEASE";
         case CommandAction::RECALIBRATE: return "RECALIBRATE";
         case CommandAction::RECALIBRATE_ALL: return "RECALIBRATE_ALL";
+        case CommandAction::VALUE: return "VALUE";
+        case CommandAction::SET_SENSITIVITY: return "SET_SENSITIVITY";
         case CommandAction::SCAN: return "SCAN";
         case CommandAction::SEQUENCE_COMPLETED: return "SEQUENCE_COMPLETED";
         case CommandAction::INFO: return "INFO";
@@ -251,6 +278,8 @@ bool CommandController::actionRequiresPosition(CommandAction action) {
         case CommandAction::EXPECT:
         case CommandAction::EXPECT_RELEASE:
         case CommandAction::RECALIBRATE:
+        case CommandAction::VALUE:
+        case CommandAction::SET_SENSITIVITY:
             return true;
         default:
             return false;
@@ -373,11 +402,36 @@ void CommandController::executeInstant(const ParsedCommand& cmd) {
             }
             break;
             
+        case CommandAction::SET_SENSITIVITY:
+            if (m_touchController) {
+                if (m_touchController->setSensitivity(cmd.positionIndex, cmd.extraValue)) {
+                    m_eventQueue.queueAck(actionStr, cmd.position, cmdId);
+                } else {
+                    m_eventQueue.queueError("command_failed", cmdId);
+                }
+            } else {
+                m_eventQueue.queueError("no_touch_controller", cmdId);
+            }
+            break;
+            
         case CommandAction::SCAN:
             if (m_touchController) {
                 char sensorList[64];
                 m_touchController->buildActiveSensorList(sensorList, sizeof(sensorList));
                 m_eventQueue.queueScanned(sensorList, cmdId);
+            } else {
+                m_eventQueue.queueError("no_touch_controller", cmdId);
+            }
+            break;
+            
+        case CommandAction::VALUE:
+            if (m_touchController) {
+                int8_t sensorValue;
+                if (m_touchController->readSensorValue(cmd.positionIndex, sensorValue)) {
+                    m_eventQueue.queueValue(cmd.position, sensorValue, cmdId);
+                } else {
+                    m_eventQueue.queueError("sensor_inactive", cmdId);
+                }
             } else {
                 m_eventQueue.queueError("no_touch_controller", cmdId);
             }

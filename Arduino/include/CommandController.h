@@ -19,6 +19,8 @@
  *   EXPECT_RELEASE <pos> [#id]    - Wait for release
  *   RECALIBRATE <pos> [#id]       - Recalibrate single sensor
  *   RECALIBRATE_ALL [#id]         - Recalibrate all sensors
+ *   VALUE <pos> [#id]             - Get current sensor delta value
+ *   SET_SENSITIVITY <pos> <lvl>   - Set sensitivity (0=most, 7=least)
  * 
  * Utility Commands:
  *   PING [#id]                    - Health check
@@ -53,6 +55,8 @@ enum class CommandAction : uint8_t {
     EXPECT_RELEASE,
     RECALIBRATE,
     RECALIBRATE_ALL,
+    VALUE,
+    SET_SENSITIVITY,
     SCAN,
     SEQUENCE_COMPLETED,
     INFO,
@@ -70,6 +74,7 @@ struct ParsedCommand {
     uint8_t positionIndex;
     bool hasId;
     uint32_t id;
+    uint8_t extraValue;  // For commands that need an extra numeric parameter (e.g., sensitivity level)
     bool valid;
 };
 

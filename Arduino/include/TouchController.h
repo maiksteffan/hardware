@@ -50,6 +50,9 @@ public:
     bool recalibrate(uint8_t sensorIndex);
     void recalibrateAll();
     
+    // Sensitivity control
+    bool setSensitivity(uint8_t sensorIndex, uint8_t level);
+    
     // Expectations
     void setExpectDown(uint8_t sensorIndex, uint32_t commandId);
     void setExpectUp(uint8_t sensorIndex, uint32_t commandId);
@@ -61,6 +64,9 @@ public:
     bool isTouched(uint8_t sensorIndex) const;
     uint8_t getActiveSensorCount() const;
     void buildActiveSensorList(char* buffer, size_t bufferSize) const;
+    
+    // Sensor value reading
+    bool readSensorValue(uint8_t sensorIndex, int8_t& value);
     
     // Utilities
     static uint8_t letterToIndex(char letter);
@@ -77,7 +83,7 @@ private:
     bool initSensor(uint8_t address);
     bool readRegister(uint8_t address, uint8_t reg, uint8_t& value);
     bool writeRegister(uint8_t address, uint8_t reg, uint8_t value);
-    bool readRawTouch(uint8_t address);
+    int8_t readRawTouch(uint8_t address);  // Returns -1 on error, 0 = not touched, 1 = touched
     void pollSensors();
     void processDebounce();
 };

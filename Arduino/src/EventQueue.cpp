@@ -159,6 +159,18 @@ bool EventQueue::queueInfo(uint32_t commandId) {
     return enqueue(event);
 }
 
+bool EventQueue::queueValue(char position, int8_t value, uint32_t commandId) {
+    Event event;
+    event.type = EventType::VALUE;
+    event.action[0] = '\0';
+    event.position = position;
+    event.commandId = commandId;
+    snprintf(event.extra, sizeof(event.extra), "%d", value);
+    event.valid = true;
+    
+    return enqueue(event);
+}
+
 // ============================================================================
 // Private Methods
 // ============================================================================
@@ -265,6 +277,18 @@ void EventQueue::sendEvent(const Event& event) {
             Serial.print(FIRMWARE_VERSION);
             Serial.print(" protocol=");
             Serial.print(PROTOCOL_VERSION);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::VALUE:
+            Serial.print("VALUE ");
+            Serial.print(event.position);
+            Serial.print(" ");
+            Serial.print(event.extra);
             if (event.commandId != NO_COMMAND_ID) {
                 Serial.print(" #");
                 Serial.print(event.commandId);

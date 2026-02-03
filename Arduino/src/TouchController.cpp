@@ -93,6 +93,26 @@ void TouchController::recalibrateAll() {
     }
 }
 
+bool TouchController::setSensitivity(uint8_t sensorIndex, uint8_t level) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) return false;
+    if (!m_sensors[sensorIndex].active) return false;
+    if (level > 7) return false;
+    
+    uint8_t address = SENSOR_I2C_ADDRESSES[sensorIndex];
+    
+    // Read current sensitivity register value
+    uint8_t regValue;
+    if (!readRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, regValue)) {
+        return false;
+    }
+    
+    // Sensitivity is in bits 6:4 (DELTA_SENSE[2:0])
+    // 0 = 128x (most sensitive), 7 = 1x (least sensitive)
+    regValue = (regValue & 0x8F) | (level << 4);
+    
+    return writeRegister(address, CAP1188_REG_SENSITIVITY_CONTROL, regValue);
+}
+
 void TouchController::setExpectDown(uint8_t sensorIndex, uint32_t commandId) {
     if (sensorIndex >= NUM_TOUCH_SENSORS) return;
     m_expectDown[sensorIndex].active = true;
@@ -149,6 +169,22 @@ bool TouchController::isTouched(uint8_t sensorIndex) const {
 
 uint8_t TouchController::getActiveSensorCount() const {
     return m_activeSensorCount;
+}
+
+bool TouchController::readSensorValue(uint8_t sensorIndex, int8_t& value) {
+    if (sensorIndex >= NUM_TOUCH_SENSORS) return false;
+    if (!m_sensors[sensorIndex].active) return false;
+    
+    uint8_t address = SENSOR_I2C_ADDRESSES[sensorIndex];
+    uint8_t rawValue;
+    
+    // Read delta count for CS1 (only CS1 is enabled per sensor)
+    if (!readRegister(address, CAP1188_REG_SENSOR_INPUT_DELTA_1, rawValue)) {
+        return false;
+    }
+    
+    value = static_cast<int8_t>(rawValue);  // Interpret as signed
+    return true;
 }
 
 // ============================================================================
@@ -212,11 +248,11 @@ bool TouchController::writeRegister(uint8_t address, uint8_t reg, uint8_t value)
     return Wire.endTransmission() == 0;
 }
 
-bool TouchController::readRawTouch(uint8_t address) {
+int8_t TouchController::readRawTouch(uint8_t address) {
     uint8_t status;
     
     if (!readRegister(address, CAP1188_REG_SENSOR_INPUT_STATUS, status)) {
-        return false;
+        return -1;  // I2C error - return error state, not "not touched"
     }
     
     bool touched = (status & CS1_BIT_MASK) != 0;
@@ -228,7 +264,7 @@ bool TouchController::readRawTouch(uint8_t address) {
         }
     }
     
-    return touched;
+    return touched ? 1 : 0;
 }
 
 void TouchController::pollSensors() {
@@ -242,7 +278,11 @@ void TouchController::pollSensors() {
         
         if (touched != m_sensors[i].currentTouched) {
             m_sensors[i].currentTouched = touched;
-            m_sensors[i].lastChangeTime = now;
+            // Only reset debounce timer if the new state differs from debounced state
+            // This prevents noise from resetting the timer while holding a touch
+            if (touched != m_sensors[i].debouncedTouched) {
+                m_sensors[i].lastChangeTime = now;
+            }
         }
     }
 }
@@ -254,10 +294,15 @@ void TouchController::processDebounce() {
         if (!m_sensors[i].active) continue;
         
         TouchSensorState& sensor = m_sensors[i];
-        uint32_t elapsed = now - sensor.lastChangeTime;
         
-        if (elapsed >= DEBOUNCE_MS) {
-            if (sensor.currentTouched != sensor.debouncedTouched) {
+        // Only update debounced state if current differs AND enough time has passed
+        if (sensor.currentTouched != sensor.debouncedTouched) {
+            uint32_t elapsed = now - sensor.lastChangeTime;
+            
+            // Use different debounce times: shorter for touch, longer for release
+            uint16_t requiredDebounce = sensor.currentTouched ? DEBOUNCE_TOUCH_MS : DEBOUNCE_RELEASE_MS;
+            
+            if (elapsed >= requiredDebounce) {
                 sensor.debouncedTouched = sensor.currentTouched;
                 
                 if (sensor.debouncedTouched != sensor.lastReportedTouched) {

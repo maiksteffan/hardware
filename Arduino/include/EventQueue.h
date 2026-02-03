@@ -23,7 +23,8 @@ enum class EventType : uint8_t {
     TOUCH_RELEASED,
     SCANNED,
     RECALIBRATED,
-    INFO
+    INFO,
+    VALUE
 };
 
 // ============================================================================
@@ -63,6 +64,7 @@ public:
     bool queueScanned(const char* sensorList, uint32_t commandId = NO_COMMAND_ID);
     bool queueRecalibrated(char position, uint32_t commandId = NO_COMMAND_ID);
     bool queueInfo(uint32_t commandId = NO_COMMAND_ID);
+    bool queueValue(char position, int8_t value, uint32_t commandId = NO_COMMAND_ID);
 
 private:
     Event m_queue[EVENT_QUEUE_SIZE];

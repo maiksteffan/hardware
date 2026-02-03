@@ -38,7 +38,8 @@ constexpr uint8_t EVENT_QUEUE_SIZE = 16;
 // ============================================================================
 
 constexpr uint16_t TOUCH_POLL_INTERVAL_MS = 5;
-constexpr uint16_t DEBOUNCE_MS = 20;
+constexpr uint16_t DEBOUNCE_TOUCH_MS = 100;    // Time to confirm touch
+constexpr uint16_t DEBOUNCE_RELEASE_MS = 100; // Time to confirm release (longer = more stable)
 constexpr uint8_t NUM_TOUCH_SENSORS = 25;
 
 // ============================================================================
@@ -106,6 +107,7 @@ constexpr uint16_t I2C_RETRY_DELAY_US = 100;
 // CAP1188 Register addresses
 constexpr uint8_t CAP1188_REG_MAIN_CONTROL = 0x00;
 constexpr uint8_t CAP1188_REG_SENSOR_INPUT_STATUS = 0x03;
+constexpr uint8_t CAP1188_REG_SENSOR_INPUT_DELTA_1 = 0x10;  // Delta count for CS1
 constexpr uint8_t CAP1188_REG_SENSITIVITY_CONTROL = 0x1F;
 constexpr uint8_t CAP1188_REG_CONFIG1 = 0x20;
 constexpr uint8_t CAP1188_REG_SENSOR_INPUT_ENABLE = 0x21;
