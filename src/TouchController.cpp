@@ -288,45 +288,4 @@ void TouchController::pollSensors() {
 }
 
 void TouchController::processDebounce() {
-    uint32_t now = millis();
-    
-    for (uint8_t i = 0; i < NUM_TOUCH_SENSORS; i++) {
-        if (!m_sensors[i].active) continue;
-        
-        TouchSensorState& sensor = m_sensors[i];
-        
-        // Only update debounced state if current differs AND enough time has passed
-        if (sensor.currentTouched != sensor.debouncedTouched) {
-            uint32_t elapsed = now - sensor.lastChangeTime;
-            
-            // Use different debounce times: shorter for touch, longer for release
-            uint16_t requiredDebounce = sensor.currentTouched ? DEBOUNCE_TOUCH_MS : DEBOUNCE_RELEASE_MS;
-            
-            if (elapsed >= requiredDebounce) {
-                sensor.debouncedTouched = sensor.currentTouched;
-                
-                if (sensor.debouncedTouched != sensor.lastReportedTouched) {
-                    sensor.lastReportedTouched = sensor.debouncedTouched;
-                    
-                    if (m_eventQueue) {
-                        char letter = indexToLetter(i);
-                        
-                        if (sensor.debouncedTouched) {
-                            if (m_expectDown[i].active) {
-                                m_eventQueue->queueTouched(letter, m_expectDown[i].commandId);
-                                m_expectDown[i].active = false;
-                                m_expectDown[i].commandId = NO_COMMAND_ID;
-                            }
-                        } else {
-                            if (m_expectUp[i].active) {
-                                m_eventQueue->queueTouchReleased(letter, m_expectUp[i].commandId);
-                                m_expectUp[i].active = false;
-                                m_expectUp[i].commandId = NO_COMMAND_ID;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+    uin

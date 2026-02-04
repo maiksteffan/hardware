@@ -133,16 +133,4 @@ private:
     static bool actionIsLongRunning(CommandAction action);
     
     // Execution methods
-    void executeCommand(const ParsedCommand& cmd);
-    void executeInstant(const ParsedCommand& cmd);
-    bool queueCommand(const ParsedCommand& cmd);
-    void tickCommand(QueuedCommand& qc);
-    
-    // Utilities
-    static const char* skipWhitespace(const char* str);
-    static const char* findTokenEnd(const char* str);
-    static bool strcasecmpN(const char* a, const char* b, size_t len);
-    static uint8_t charToIndex(char c);
-};
-
-#endif // COMMAND_CONTROLLER_H
+  

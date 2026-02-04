@@ -138,15 +138,4 @@ constexpr uint16_t POST_INIT_RECAL_DELAY_MS = 1500;
 constexpr uint8_t SENSOR_I2C_ADDRESSES[NUM_TOUCH_SENSORS] = {
     0x1F, 0x1E, 0x1D, 0x1C, 0x3F,  // A-E
     0x1A, 0x28, 0x29, 0x2A, 0x0E,  // F-J
-    0x0F, 0x18, 0x19, 0x3C, 0x2F,  // K-O
-    0x38, 0x0D, 0x0C, 0x0B, 0x3E,  // P-T
-    0x2C, 0x3D, 0x08, 0x09, 0x0A   // U-Y
-};
-
-// ============================================================================
-// Command IDs
-// ============================================================================
-
-constexpr uint32_t NO_COMMAND_ID = 0xFFFFFFFF;
-
-#endif // CONFIG_H
+    0x0F, 0x18, 0x19, 0x3C, 0x2F,  //

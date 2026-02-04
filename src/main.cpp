@@ -87,5 +87,4 @@ void loop() {
     ledController.tick();
     
     // 6. Flush pending events to serial
-    eventQueue.flush(3);
-}
+    event
