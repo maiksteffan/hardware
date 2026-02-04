@@ -38,6 +38,7 @@ struct PositionData {
     uint8_t animationStep;
     uint32_t lastAnimationTime;
     bool blinkOn;
+    uint8_t expansionRadius;  // Current expansion radius for EXPAND_STEP/CONTRACT_STEP
 };
 
 // ============================================================================
@@ -54,15 +55,22 @@ public:
     // LED commands
     bool show(uint8_t position);
     bool hide(uint8_t position);
+    void hideAll();
     bool success(uint8_t position);
     bool fail(uint8_t position);
     bool contract(uint8_t position);
     bool blink(uint8_t position);
     bool stopBlink(uint8_t position);
+    bool expandStep(uint8_t position);
+    bool contractStep(uint8_t position);
     
     // Sequence animation
     void startSequenceCompletedAnimation();
     bool isSequenceCompletedAnimationComplete() const;
+    
+    // Menu change animation
+    void startMenuChangeAnimation(uint8_t r, uint8_t g, uint8_t b, uint8_t range);
+    bool isMenuChangeAnimationComplete() const;
     
     // State queries
     bool isAnimationComplete(uint8_t position) const;
@@ -83,16 +91,5 @@ private:
     uint32_t m_sequenceAnimLastTime;
     bool m_needsUpdate;
     
-    void update(uint32_t nowMillis);
-    const LedMapping* getMapping(uint8_t position) const;
-    Adafruit_NeoPixel* getStrip(StripId strip);
-    uint16_t getStripLength(StripId strip) const;
-    void setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b);
-    void clearExpandedRegion(uint8_t position, const LedMapping* mapping);
-    void updateAnimation(uint8_t position, uint32_t nowMillis);
-    void updateContractAnimation(uint8_t position, uint32_t nowMillis);
-    void updateBlinking(uint32_t nowMillis);
-    void updateSequenceCompletedAnimation(uint32_t nowMillis);
-};
-
-#endif // LED_CONTROLLER_H
+    // Menu change animation state
+    bool m_menuChangeAc

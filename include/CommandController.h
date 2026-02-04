@@ -12,6 +12,9 @@
  *   CONTRACT <pos> [#id]          - Contract expanded LED back to single
  *   BLINK <pos> [#id]             - Start blinking (orange, fast)
  *   STOP_BLINK <pos> [#id]        - Stop blinking
+ *   EXPAND_STEP <pos> [#id]       - Expand lit area by 1 LED on each side
+ *   CONTRACT_STEP <pos> [#id]     - Contract lit area by 1 LED on each side
+ *   MENUE_CHANGE <r,g,b> <range>  - Expand animation on both strips from 0 to range
  *   SEQUENCE_COMPLETED [#id]      - Play celebration animation
  * 
  * Touch Commands:
@@ -46,11 +49,15 @@ enum class CommandAction : uint8_t {
     INVALID = 0,
     SHOW,
     HIDE,
+    HIDE_ALL,
     SUCCESS,
     FAIL,
     CONTRACT,
     BLINK,
     STOP_BLINK,
+    EXPAND_STEP,
+    CONTRACT_STEP,
+    MENUE_CHANGE,
     EXPECT,
     EXPECT_RELEASE,
     RECALIBRATE,
@@ -75,6 +82,8 @@ struct ParsedCommand {
     bool hasId;
     uint32_t id;
     uint8_t extraValue;  // For commands that need an extra numeric parameter (e.g., sensitivity level)
+    uint8_t r, g, b;     // RGB color for MENUE_CHANGE
+    uint8_t range;       // Range for MENUE_CHANGE
     bool valid;
 };
 
@@ -133,4 +142,16 @@ private:
     static bool actionIsLongRunning(CommandAction action);
     
     // Execution methods
-  
+    void executeCommand(const ParsedCommand& cmd);
+    void executeInstant(const ParsedCommand& cmd);
+    bool queueCommand(const ParsedCommand& cmd);
+    void tickCommand(QueuedCommand& qc);
+    
+    // Utilities
+    static const char* skipWhitespace(const char* str);
+    static const char* findTokenEnd(const char* str);
+    static bool strcasecmpN(const char* a, const char* b, size_t len);
+    static uint8_t charToIndex(char c);
+};
+
+#endif // COMMAND_CONTROLLER_H

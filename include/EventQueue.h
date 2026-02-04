@@ -72,4 +72,8 @@ private:
     uint8_t m_tail;
     uint8_t m_count;
     
-    bool 
+    bool enqueue(const Event& event);
+    void sendEvent(const Event& event);
+};
+
+#endif // EVENT_QUEUE_H

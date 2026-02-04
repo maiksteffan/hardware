@@ -273,4 +273,27 @@ void EventQueue::sendEvent(const Event& event) {
             break;
             
         case EventType::INFO:
-            Serial.print("INFO firm
+            Serial.print("INFO firmware=");
+            Serial.print(FIRMWARE_VERSION);
+            Serial.print(" protocol=");
+            Serial.print(PROTOCOL_VERSION);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+            
+        case EventType::VALUE:
+            Serial.print("VALUE ");
+            Serial.print(event.position);
+            Serial.print(" ");
+            Serial.print(event.extra);
+            if (event.commandId != NO_COMMAND_ID) {
+                Serial.print(" #");
+                Serial.print(event.commandId);
+            }
+            Serial.println();
+            break;
+    }
+}

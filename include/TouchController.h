@@ -82,4 +82,10 @@ private:
     
     bool initSensor(uint8_t address);
     bool readRegister(uint8_t address, uint8_t reg, uint8_t& value);
-    bo
+    bool writeRegister(uint8_t address, uint8_t reg, uint8_t value);
+    int8_t readRawTouch(uint8_t address);  // Returns -1 on error, 0 = not touched, 1 = touched
+    void pollSensors();
+    void processDebounce();
+};
+
+#endif // TOUCH_CONTROLLER_H
