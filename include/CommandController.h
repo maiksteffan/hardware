@@ -131,27 +131,4 @@ private:
     bool m_lineOverflow;
     
     // Command queue
-    QueuedCommand m_commandQueue[COMMAND_QUEUE_SIZE];
-    
-    // Parsing methods
-    bool extractLine();
-    bool parseLine(const char* line, ParsedCommand& cmd);
-    static CommandAction parseAction(const char* str, size_t len);
-    static const char* actionToString(CommandAction action);
-    static bool actionRequiresPosition(CommandAction action);
-    static bool actionIsLongRunning(CommandAction action);
-    
-    // Execution methods
-    void executeCommand(const ParsedCommand& cmd);
-    void executeInstant(const ParsedCommand& cmd);
-    bool queueCommand(const ParsedCommand& cmd);
-    void tickCommand(QueuedCommand& qc);
-    
-    // Utilities
-    static const char* skipWhitespace(const char* str);
-    static const char* findTokenEnd(const char* str);
-    static bool strcasecmpN(const char* a, const char* b, size_t len);
-    static uint8_t charToIndex(char c);
-};
-
-#endif // COMMAND_CONTROLLER_H
+    QueuedCommand m_commandQueue[C

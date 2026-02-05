@@ -178,4 +178,69 @@ send_cmd(f"HIDE {pos} #{cmd_id + 2}")  # Then hide
 
 ## Timing Considerations
 
-- **S
+- **Simultaneity Window**: ~500ms tolerance for "simultaneous" touches
+- **Touch Debounce**: 30ms to confirm touch
+- **Release Debounce**: 100ms to confirm release (prevents false releases)
+- **Animation Duration**: SUCCESS/CONTRACT animation ~125ms (5 steps × 25ms)
+- **Poll Interval**: Touch sensors polled every 5ms
+- **Blink Interval**: 150ms on/off cycle
+
+## Sensitivity Levels
+
+| Level | Multiplier | Description |
+|-------|------------|-------------|
+| 0 | 128x | Most sensitive |
+| 1 | 64x | |
+| 2 | 32x | Default |
+| 3 | 16x | |
+| 4 | 8x | |
+| 5 | 4x | |
+| 6 | 2x | |
+| 7 | 1x | Least sensitive |
+
+## LED Colors
+
+| State | Color | RGB |
+|-------|-------|-----|
+| SHOW | Blue | (0, 0, 255) |
+| SUCCESS/CONTRACT | Green | (0, 255, 0) |
+| FAIL | Red | (255, 0, 0) |
+| BLINK | Orange | (255, 100, 0) |
+| OFF | Black | (0, 0, 0) |
+
+## Architecture Notes
+
+```
+┌─────────────┐     Serial      ┌──────────────┐
+│ Raspberry Pi │ ◄──────────────► │   Arduino    │
+│ (Game Logic) │    115200 baud  │ (Hardware)   │
+└─────────────┘                  └──────────────┘
+      │                                │
+      │  Commands ────────────────►    │  LED Control
+      │                                │  Touch Sensing
+      │  ◄──────────────── Responses   │
+      │  ◄──────────────── Events      │
+```
+
+The Arduino handles:
+- LED control (NeoPixel strips)
+- Touch sensor polling (25x CAP1188)
+- Debouncing
+- Animation timing
+
+The Raspberry Pi handles:
+- Game logic and sequences
+- User interface
+- Scoring
+- Timing validation
+
+## Hardware Reference
+
+- **Board**: Arduino UNO R4 WiFi
+- **LED Strips**: 2x 190 LEDs on pins D5, D10
+- **Touch Sensors**: 25x CAP1188 via I2C
+- **Positions**: A-Y mapped to specific LEDs and sensors
+
+---
+
+*Protocol Version: 2.0 | Firmware Version: 2.0.0*

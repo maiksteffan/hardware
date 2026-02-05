@@ -92,4 +92,25 @@ private:
     bool m_needsUpdate;
     
     // Menu change animation state
-    bool m_menuChangeAc
+    bool m_menuChangeActive;
+    uint8_t m_menuChangeRange;
+    uint8_t m_menuChangeR, m_menuChangeG, m_menuChangeB;
+    uint32_t m_menuChangeStartTime;
+    bool m_menuChangeExpanding;  // true = expanding, false = contracting
+    uint16_t m_menuChangeExpandDuration;   // Duration in ms for expansion
+    uint16_t m_menuChangeContractDuration; // Duration in ms for contraction
+    
+    void update(uint32_t nowMillis);
+    const LedMapping* getMapping(uint8_t position) const;
+    Adafruit_NeoPixel* getStrip(StripId strip);
+    uint16_t getStripLength(StripId strip) const;
+    void setLed(StripId strip, int16_t index, uint8_t r, uint8_t g, uint8_t b);
+    void clearExpandedRegion(uint8_t position, const LedMapping* mapping);
+    void updateAnimation(uint8_t position, uint32_t nowMillis);
+    void updateContractAnimation(uint8_t position, uint32_t nowMillis);
+    void updateBlinking(uint32_t nowMillis);
+    void updateSequenceCompletedAnimation(uint32_t nowMillis);
+    void updateMenuChangeAnimation(uint32_t nowMillis);
+};
+
+#endif // LED_CONTROLLER_H

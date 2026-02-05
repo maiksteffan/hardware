@@ -56,12 +56,14 @@ LedController::LedController()
     , m_sequenceAnimLastTime(0)
     , m_needsUpdate(false)
     , m_menuChangeActive(false)
-    , m_menuChangeStep(0)
     , m_menuChangeRange(0)
     , m_menuChangeR(0)
     , m_menuChangeG(0)
     , m_menuChangeB(0)
-    , m_menuChangeLastTime(0)
+    , m_menuChangeStartTime(0)
+    , m_menuChangeExpandDuration(0)
+    , m_menuChangeContractDuration(0)
+    , m_menuChangeExpanding(true)
 {
 }
 
@@ -367,12 +369,15 @@ bool LedController::isSequenceCompletedAnimationComplete() const {
 
 void LedController::startMenuChangeAnimation(uint8_t r, uint8_t g, uint8_t b, uint8_t range) {
     m_menuChangeActive = true;
-    m_menuChangeStep = 0;
     m_menuChangeRange = range;
     m_menuChangeR = r;
     m_menuChangeG = g;
     m_menuChangeB = b;
-    m_menuChangeLastTime = millis();
+    m_menuChangeStartTime = millis();
+    m_menuChangeExpanding = true;
+    // Duration scales with range for consistent speed feel
+    m_menuChangeExpandDuration = range * 2;   // ~2ms per LED for expansion
+    m_menuChangeContractDuration = range * 2; // ~2ms per LED for contraction
     
     // Clear both strips
     m_strip1.clear();
@@ -600,23 +605,56 @@ void LedController::updateSequenceCompletedAnimation(uint32_t nowMillis) {
 }
 
 void LedController::updateMenuChangeAnimation(uint32_t nowMillis) {
-    // Animation step duration - adjust for speed
-    static const uint16_t MENU_CHANGE_STEP_MS = 1;
+    uint32_t elapsed = nowMillis - m_menuChangeStartTime;
+    float progress;  // 0.0 to 1.0
+    float easedProgress;
+    uint8_t currentPos;
     
-    if (nowMillis - m_menuChangeLastTime < MENU_CHANGE_STEP_MS) return;
-    
-    m_menuChangeLastTime = nowMillis;
-    
-    // Expand by one LED on each step
-    if (m_menuChangeStep <= m_menuChangeRange) {
-        // Light up the current step index on both strips
-        m_strip1.setPixelColor(m_menuChangeStep, m_strip1.Color(m_menuChangeR, m_menuChangeG, m_menuChangeB));
-        m_strip2.setPixelColor(m_menuChangeStep, m_strip2.Color(m_menuChangeR, m_menuChangeG, m_menuChangeB));
-        m_needsUpdate = true;
-        
-        m_menuChangeStep++;
+    if (m_menuChangeExpanding) {
+        // Expansion phase
+        if (elapsed >= m_menuChangeExpandDuration) {
+            // Switch to contraction
+            m_menuChangeExpanding = false;
+            m_menuChangeStartTime = nowMillis;
+            currentPos = m_menuChangeRange;
+        } else {
+            // Calculate progress (0 to 1)
+            progress = (float)elapsed / (float)m_menuChangeExpandDuration;
+            // Ease-out: starts fast, slows down (deceleration curve)
+            // Using quadratic ease-out: 1 - (1-t)^2
+            easedProgress = 1.0f - (1.0f - progress) * (1.0f - progress);
+            currentPos = (uint8_t)(easedProgress * m_menuChangeRange);
+        }
     } else {
-        // Animation complete
-        m_menuChangeActive = false;
+        // Contraction phase
+        if (elapsed >= m_menuChangeContractDuration) {
+            // Animation complete
+            m_menuChangeActive = false;
+            m_strip1.clear();
+            m_strip2.clear();
+            m_needsUpdate = true;
+            return;
+        } else {
+            // Calculate progress (0 to 1)
+            progress = (float)elapsed / (float)m_menuChangeContractDuration;
+            // Ease-in: starts slow, speeds up (acceleration curve)
+            // Using quadratic ease-in: t^2
+            easedProgress = progress * progress;
+            // Map from range down to 0
+            currentPos = (uint8_t)((1.0f - easedProgress) * m_menuChangeRange);
+        }
     }
+    
+    // Render current state - light LEDs from 0 to current position
+    m_strip1.clear();
+    m_strip2.clear();
+    
+    for (uint8_t i = 0; i <= currentPos && i < NUM_LEDS_STRIP1; i++) {
+        m_strip1.setPixelColor(i, m_strip1.Color(m_menuChangeR, m_menuChangeG, m_menuChangeB));
+    }
+    for (uint8_t i = 0; i <= currentPos && i < NUM_LEDS_STRIP2; i++) {
+        m_strip2.setPixelColor(i, m_strip2.Color(m_menuChangeR, m_menuChangeG, m_menuChangeB));
+    }
+    
+    m_needsUpdate = true;
 }
